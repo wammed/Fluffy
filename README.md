@@ -99,7 +99,7 @@ Fluffy provides an automated installer for desktop integration:
 
 This script:
 1. Compiles optimized release binaries (`fluffy` and `fluffy-settings`).
-2. Installs binaries into `~/.cargo/bin/` (or `~/.local/bin/`).
+2. Installs binaries into `~/.local/bin/`.
 3. Installs `fluffy.service` into `~/.config/systemd/user/`.
 4. Installs application icons into `~/.local/share/icons/hicolor/scalable/apps/`.
 5. Installs the desktop launcher into `~/.local/share/applications/com.github.fluffy.Fluffy.desktop`.

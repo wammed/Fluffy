@@ -14,12 +14,9 @@ echo "=== Fluffy Desktop & systemd Integration Installer ==="
 echo "[1/5] Building release binaries (daemon + GUI)..."
 cargo build --release --features gui --manifest-path "${REPO_DIR}/Cargo.toml"
 
-# 2. Install binaries to ~/.cargo/bin (or ~/.local/bin)
-BIN_DEST="${HOME}/.cargo/bin"
-if [[ ! -d "${BIN_DEST}" ]]; then
-    BIN_DEST="${HOME}/.local/bin"
-    mkdir -p "${BIN_DEST}"
-fi
+# 2. Install binaries to ~/.local/bin
+BIN_DEST="${HOME}/.local/bin"
+mkdir -p "${BIN_DEST}"
 echo "[2/5] Installing binaries to ${BIN_DEST}..."
 cp "${REPO_DIR}/target/release/fluffy" "${BIN_DEST}/"
 cp "${REPO_DIR}/target/release/fluffy-settings" "${BIN_DEST}/"
