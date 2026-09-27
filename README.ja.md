@@ -101,7 +101,8 @@ cargo build --release --features gui
 1. 最適化済みリリースバイナリ (`fluffy` および `fluffy-settings`) のビルド。
 2. バイナリを `~/.cargo/bin/` (または `~/.local/bin/`) にインストール。
 3. `fluffy.service` を `~/.config/systemd/user/` に配置しリロード。
-4. デスクトップエントリを `~/.local/share/applications/com.github.fluffy.Fluffy.desktop` に配置。
+4. アプリアイコンを `~/.local/share/icons/hicolor/scalable/apps/` に配置。
+5. デスクトップエントリを `~/.local/share/applications/com.github.fluffy.Fluffy.desktop` に配置。
 
 ### systemd によるデーモン管理：
 

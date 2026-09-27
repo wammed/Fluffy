@@ -22,6 +22,12 @@ pub enum Message {
     DismissMessage,
 }
 
+const FLUFFY_ICON_SVG: &[u8] = include_bytes!("../../images/fluffy-icon.svg");
+
+fn app_icon(size: u16) -> cosmic::widget::icon::Icon {
+    cosmic::widget::icon::from_svg_bytes(FLUFFY_ICON_SVG).icon().size(size)
+}
+
 struct FluffySettingsApp {
     core: Core,
     socket_path: PathBuf,
@@ -67,6 +73,10 @@ impl Application for FluffySettingsApp {
         &mut self.core
     }
 
+    fn header_start(&self) -> Vec<Element<'_, Self::Message>> {
+        vec![app_icon(24).into()]
+    }
+
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
         let socket_path = default_socket_path();
         let mut app = Self {
@@ -80,6 +90,7 @@ impl Application for FluffySettingsApp {
             status_message: None,
         };
 
+        app.core.set_header_title("Fluffy Wallpaper Settings".to_string());
         app.fetch_status();
         (app, Task::none())
     }
@@ -198,6 +209,7 @@ impl Application for FluffySettingsApp {
         };
 
         let header = row![
+            app_icon(36),
             text("Fluffy Video Wallpaper").size(24),
             Space::new().width(Length::Fill),
             daemon_status_text,
