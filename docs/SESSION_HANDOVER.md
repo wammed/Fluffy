@@ -1,781 +1,239 @@
 # COSMIC Video Wallpaper Manager --- Session Handover
 
-**Status:** Phase 2 (Playback Core) Completed (Real-hardware-tested) --- Moving to Phase 3 (IPC).\
+**Status:** Phase 3 (IPC & Daemon) COMPLETED (Real-hardware-tested) --- Moving to Phase 4 (Cache / Import / Normalize).\
 **Last updated:** 2026-09-27\
-**Next owner:** Implementation agent / developer
+**Current phase summary:**
+- **Phase 1: Wayland / GStreamer PoC** --- **COMPLETE** (Real-hardware-tested)
+- **Phase 2: Playback Core** --- **COMPLETE** (Real-hardware-tested)
+- **Phase 3: IPC & Daemon** --- **COMPLETE** (Real-hardware-tested)
+- **Phase 4: Cache / Import / Normalize** --- **NEXT**
+- Phase 5: Multi-output Management --- PENDING
+- Phase 6: Settings GUI (libcosmic) --- PENDING
+- Phase 7: Hardening & systemd --- PENDING
 
 ------------------------------------------------------------------------
 
 ## 1. Project Summary
 
-Build a very lightweight loop-video wallpaper manager for COSMIC Desktop
-/ Wayland.
+A lightweight loop-video wallpaper manager for COSMIC Desktop / Wayland.
 
-The intended user experience is:
+The system is intentionally split into:
 
 ``` text
-User / autostart
+User / autostart / CLI
       |
       v
-wallpaper daemon
+Wallpaper daemon (resident, minimal CPU/RAM overhead)
       |
-      +-- Wayland layer-shell BACKGROUND
+      +-- Wayland layer-shell (Layer::Bottom non-destructive overlay)
       |
-      +-- GStreamer video playback
+      +-- GStreamer playback core (dual-pipeline seamless switching, EOS seek loop)
       |
-      +-- Unix socket IPC
+      +-- Unix domain socket IPC ($XDG_RUNTIME_DIR/fluffy.sock)
 ```
 
-Settings are handled by a separate `libcosmic` GUI.
-
-The daemon must remain alive after the GUI exits.
+Settings are handled by a separate `libcosmic` GUI that connects via IPC and exits immediately when configuration is done. The daemon continues playback independently.
 
 ------------------------------------------------------------------------
 
-## 2. Current State
+## 2. Current State & Verification Level
 
-### Completed
+Per project documentation standards, items are tracked by five clear verification levels:
+`Implemented` -> `Compiled` -> `Unit-tested` -> `Integration-tested` -> `Real-hardware-tested`.
 
--   High-level architecture defined.
--   Daemon / GUI separation chosen.
--   Unix-domain-socket IPC chosen.
--   GStreamer chosen for playback.
--   `waylandsink` chosen as the Wayland sink candidate.
--   `wlr-layer-shell` BACKGROUND chosen for desktop placement.
--   ffprobe/ffmpeg chosen for media validation and normalization.
--   H.264/yuv420p/MP4/no-audio/30fps defined as the default playback profile.
--   **Step 1 (Environment audit): [Real-hardware-tested]**
-    - Arch Linux, COSMIC Desktop / cosmic-comp (`XDG_CURRENT_DESKTOP=COSMIC`, `XDG_SESSION_TYPE=wayland`, `WAYLAND_DISPLAY=wayland-1`).
-    - GPU: NVIDIA GeForce RTX 3080 (Driver 615.71.09), Outputs: DP-1 (2560x1440), DP-2 (2560x1440).
-    - Rust 1.98.1, GStreamer 1.28.7, ffmpeg / ffprobe available.
--   **Step 2 (Layer-shell BACKGROUND surface): [Real-hardware-tested]**
-    - Verified `zwlr_layer_surface_v1` on `Layer::Background` covering 2560x1440 output with solid color.
--   **Step 3 (GStreamer waylandsink integration): [Real-hardware-tested]**
-    - **CRITICAL ARCHITECTURE GATE PASSED & VISUALLY VERIFIED ON REAL HARDWARE**:
-      - GStreamer `waylandsink` successfully renders H.264 video into Rust-created `wlr-layer-shell` surface under COSMIC.
-      - Tested & visually verified on both `DP-1` and `DP-2` (2560x1440, NVIDIA RTX 3080).
-      - Video playback, counter animation, and frame updates fully operational.
-      - Verified `gst_wl_display_handle_context_new` passing Wayland display context to pipeline/sink.
-      - Verified `GstVideoOverlay::set_window_handle` and `GstVideoOverlay::set_render_rectangle(0, 0, w, h)`.
-      - Crucial finding: Parent layer surface must map an initial base frame for the subsurface video to become visible.
-      - Layer placement: `Layer::Bottom` verified to display directly above `cosmic-bg` desktop wallpaper.
-      - Automatic hardware acceleration via `nvh264dec` confirmed working under `playbin`.
--   **Step 4 (Looping without recreating surface): [Real-hardware-tested]**
-    - Verified EOS detection and seek to 0 (`pipeline.seek_simple`) without flickering or surface teardown.
-    - Clean teardown on timeout/Ctrl+C verified on real hardware.
--   **Step 6 (Playback abstraction & Lifecycle): [Real-hardware-tested]**
-    - Architecture modularized cleanly: `src/error.rs`, `src/wayland/`, `src/playback/`.
-    - `VideoPlayer` trait and `GstVideoPlayer` implementation verified on real hardware:
-      - `play(video)`: Instant startup.
-      - `pause()`: Freezes video smoothly.
-      - `resume()`: Continues playback without frame drop.
-      - Dynamic video switching: Replaces pipeline with new video without destroying Wayland layer surface.
-      - `stop()`: Clean pipeline release and state transition.
+### 2.1 Verified on Real Hardware (`Real-hardware-tested`)
 
-### Not completed
+**Test Environment:**
+- OS: CachyOS / Arch Linux
+- Compositor: COSMIC Desktop (`cosmic-comp`, `wayland-1`, `XDG_CURRENT_DESKTOP=COSMIC`)
+- GPU: NVIDIA GeForce RTX 3080 (Driver 615.71.09)
+- Outputs detected: `DP-1` (2560x1440), `DP-2` (2560x1440)
+- Stack: Rust 1.98.1 (Edition 2024), GStreamer 1.28.7, `waylandsink`, `nvh264dec`
 
-The following have not yet been implemented / proven on real hardware:
+#### Phase 1: Wayland / GStreamer PoC [COMPLETE]
+- [x] **Wayland display handle passing**: Verified `GstWaylandDisplayHandleContext` (`gst_wl_display_handle_context_new`) links application Wayland connection to GStreamer sink.
+- [x] **Layer surface mapping**: Verified `zwlr_layer_surface_v1` on `Layer::Bottom` covering target output.
+- [x] **Subsurface visibility**: Verified parent layer surface must attach an initial base buffer (`Argb8888`) so that GStreamer subsurface becomes visible to compositor.
+- [x] **Explicit render rectangle**: Verified `overlay.set_render_rectangle(0, 0, w, h)` is required for external surface binding.
+- [x] **Hardware decoding**: Verified automatic `nvh264dec` hardware acceleration under GStreamer `playbin`.
 
--   daemon Unix domain socket IPC (Phase 3).
--   multi-output concurrent playback manager (Phase 5).
--   output hotplug/reconfiguration handling.
--   video cache / ffmpeg normalization pipeline (Phase 4).
--   `wp_viewporter` dynamic scaling behavior under COSMIC.
--   GUI (libcosmic - Phase 6).
--   systemd --user service unit.
--   systematic performance benchmark measurements.
+#### Phase 2: Playback Core [COMPLETE]
+- [x] **Codebase modularization**: Clean architecture under `src/error.rs`, `src/wayland/`, `src/playback/`.
+- [x] **VideoPlayer trait & GstVideoPlayer**:
+  - `play(video)`: Instant playback start.
+  - `pause()`: Video frames freeze smoothly.
+  - `resume()`: Smooth resume without frame drops.
+  - `stop()`: Clean pipeline transition to `NULL`.
+- [x] **Zero-flicker seamless video switching**: Dual-pipeline pre-roll architecture verified. Transition from video A (`test.mp4`) to video B (`test2.mp4`) renders completely flicker-free without blank frames or black flashes.
+- [x] **Seamless loop playback**: EOS bus message triggers `seek_simple(ZERO)` without recreating pipeline or surface (verified across 17+ continuous loop cycles on real hardware).
 
-------------------------------------------------------------------------
+#### Phase 3: IPC & Daemon Architecture [COMPLETE]
+- [x] **Unix domain socket IPC**:
+  - Bound at `$XDG_RUNTIME_DIR/fluffy.sock` (or `/run/user/1000/fluffy.sock`).
+  - Strict 0600 file permissions (owner only).
+  - Stale socket detection: Automatically clears dead socket files on daemon startup and rebinds cleanly.
+  - Non-blocking server dispatch: IPC polling integrated into the Wayland/GStreamer event loop without thread blocking.
+- [x] **Protocol implementation**:
+  - Request/Response envelope protocol via JSON Lines.
+  - Maximum request size limit enforced (64 KB).
+  - Subcommands: `status`, `set-video`, `pause`, `resume`, `stop`, `reload`.
+- [x] **Full CLI suite (`fluffy`)**:
+  - `fluffy daemon`: Resident background daemon.
+  - `fluffy status`: Queries and outputs real-time state, video path, generation, loop count.
+  - `fluffy set-video <path>`: Switches wallpaper via IPC.
+  - `fluffy pause` / `resume` / `stop`: Controls playback state via IPC.
+- [x] **Generation semantics (Section 9.3)**:
+  - Verified rejection of stale/outdated requests: Request with `--generation 0` sent to active daemon (generation 2) is blocked with:
+    `Error: Ipc("Stale request generation: 0 < current 2")`.
+- [x] **Clean shutdown & restoration**:
+  - On SIGINT (Ctrl+C), players stop, layer surface unmaps, socket file is deleted, and the desktop wallpaper managed by `cosmic-bg` is immediately and cleanly restored.
 
-## 3. Most Important Next Task
+### 2.2 Critical Unverified Items (DO NOT treat as complete)
 
-### DO NOT START WITH THE GUI.
+To maintain strict alignment with the technical specification and test matrix, the following are **explicitly NOT yet verified on real hardware**:
 
-The first implementation task is a minimal technical PoC.
-
-Required PoC:
-
-``` text
-Rust
- |
- +-- Wayland connection
- |
- +-- wl_surface
- |
- +-- zwlr_layer_surface_v1
- |      layer = BACKGROUND
- |
- +-- GStreamer
-        |
-        +-- test H.264 MP4
-        |
-        +-- waylandsink
-```
-
-Target:
-
-``` text
-COSMIC Desktop / cosmic-comp
-one output
-```
-
-Success means:
-
-1.  daemon starts;
-2.  creates a BACKGROUND layer surface;
-3.  GStreamer renders a test video to that surface;
-4.  video loops;
-5.  no separate visible GStreamer toplevel window appears;
-6.  surface covers the intended output;
-7.  the compositor remains usable.
-
-This is the primary architecture gate.
+1. **Multi-output simultaneous playback** (`DP-1 + DP-2` dual concurrent playback) -> Phase 5.
+2. **Mixed resolution handling** -> Phase 5.
+3. **Display hotplug & output removal/addition** -> Phase 5.
+4. **Output reconfiguration & scale changes** -> Phase 5.
+5. **Fractional scaling** under COSMIC.
+6. **Dynamic surface scaling via `wp_viewporter`**.
+7. **Cache management & normalization pipeline** (`ffprobe` validation / `ffmpeg` normalization) -> Phase 4.
+8. **Systemd user service integration** (`systemd --user`) -> Phase 7.
+9. **Settings GUI** (`libcosmic` / Iced) -> Phase 6.
+10. **Systematic performance benchmarks** (CPU %, RSS MB, GPU 3D/Video decoder utilization across 1080p, 1440p, 4K) -> Phase 7.
 
 ------------------------------------------------------------------------
 
-## 4. Critical Technical Findings & Architecture Decision
+## 3. Most Important Next Task: Phase 4 (Cache / Import / Normalize)
+
+### Goal:
+Build the media normalization and atomic caching subsystem so that arbitrary user videos are validated, safely normalized, and stored before the daemon attempts playback.
+
+### Phase 4 Scope:
+1. **`ffprobe` Inspection & Validation**:
+   - Validate container, streams, and codecs.
+   - Enforce 4K dimension policy: `width <= 3840 && height <= 2160`.
+   - Reject oversized videos **before** executing expensive transcoding.
+   - Check frame rates, duration, audio/subtitle presence.
+2. **`ffmpeg` Normalization**:
+   - Transcode to playback profile: MP4 container, H.264 codec, `yuv420p` pixel format, 30 fps, no audio, no subtitles.
+   - Ensure even dimensions (width/height divisible by 2).
+   - Use direct argument arrays (never `sh -c` or shell strings).
+3. **Atomic Cache Storage**:
+   - Location: `~/.cache/fluffy/objects/<sha256>.mp4` and `~/.cache/fluffy/metadata/<sha256>.json`.
+   - Unique temporary file naming (`.tmp.<pid>.<uuid>`) to prevent collisions during concurrent imports.
+   - Atomic rename semantics into final destination.
+   - Reuse existing valid cache on identical input.
+   - Clean up temporary files on conversion failure.
+
+------------------------------------------------------------------------
+
+## 4. Key Architectural Decisions Established
 
 ### 4.1 Non-Destructive Overlay Model (Coexistence with `cosmic-bg`)
+- Native `cosmic-bg` is **never** terminated or modified. It remains idle (0% CPU, 0% GPU) on `Layer::Background`.
+- Fluffy renders on `Layer::Bottom` directly covering `cosmic-bg`, underneath desktop icons, docks, and windows.
+- Any crash, exit, or stop immediately unmaps Fluffy's surface, showing the original wallpaper instantly.
 
-**Architectural Decision:**
-The daemon does **NOT** kill, replace, or disrupt the native desktop wallpaper daemon (`cosmic-bg`).
-Instead, it operates as a **non-destructive overlay**:
-- `cosmic-bg` runs on `Layer::Background` and stays idle (0% CPU, 0% GPU).
-- Fluffy creates its surface on `Layer::Bottom` covering the screen directly above `cosmic-bg` and beneath application windows and desktop icons.
-- If Fluffy stops, pauses, or terminates, the original static wallpaper is instantly revealed without black screens or broken session states.
-- This design ensures maximum desktop safety and seamless fallback.
+### 4.2 Dual-Pipeline Preroll-Before-Switch
+- Changing URI on a single pipeline causes `gstwaylandsink` to render `NULL` buffer on `PAUSED -> READY`, flashing desktop background.
+- Fluffy instantiates a secondary pipeline attached to the same parent surface, pauses it until preroll finishes, switches to `PLAYING`, and tears down the old pipeline. Result: 100% flicker-free.
 
-### 4.2 GStreamer Subsurface & Parent Mapping Requirement
-
-During Phase 1 PoC, the following critical requirements were uncovered and resolved:
-1. **Wayland Display Context Sync**: `waylandsink` must receive the application's Wayland display handle via `GstWaylandDisplayHandleContext` (`gst_wl_display_handle_context_new`), otherwise it attempts an independent connection and rejects external surface binding.
-2. **Parent Layer Surface Mapping**: GStreamer creates a `wl_subsurface` inside the application-supplied `wl_surface`. Under Wayland specifications, a subsurface is **not visible unless the parent surface has an initial buffer attached and committed**. Mapping a transparent initial base buffer on the layer surface makes the video subsurface visible.
-3. **Explicit Render Rectangle**: `overlay.set_render_rectangle(0, 0, width, height)` is strictly required by `waylandsink` when targeting an external surface.
-
-### 4.3 Video Switching Discontinuity ("Bashi" / Flicker) Resolution
-
-1. **Root Cause Analysis:**
-   In single-pipeline reuse (`playbin` with URI change), the pipeline must transition `PLAYING -> PAUSED -> READY` before setting a new URI.
-   Inspection of GStreamer's `gstwaylandsink.c` reveals:
-   ```c
-   case GST_STATE_CHANGE_PAUSED_TO_READY:
-       gst_wl_window_render(self->window, NULL, NULL); /* remove buffer from surface, show nothing */
-   ```
-   This unmaps the video buffer from the Wayland subsurface during state transition, exposing the layer-surface background / `cosmic-bg` and creating a visible jarring flicker ("バシッ") before the new video is prerolled and displayed.
-
-2. **Adopted Architecture: Dual Pipeline (Preroll-Before-Switch)**
-   - Maintain active playback on Pipeline A.
-   - Construct new Pipeline B for the target video, binding to the **same** parent `WallpaperSurface`.
-   - Set Pipeline B to `PAUSED` and synchronously wait for its preroll completion (`res == Ok(Success)` or `Async` completion).
-   - In Wayland (`wl_subsurface`), the newly created subsurface is stacked **in front of** the existing subsurface.
-   - Once B's first frame is committed to the compositor, transition B to `PLAYING`.
-   - Immediately transition Pipeline A to `NULL` and destroy it.
-   - Base buffer on `WallpaperSurface` is set to opaque black (`0x00, 0x00, 0x00, 0xFF`) to prevent any compositing leakage during multi-subsurface transitions.
-   - Result: 100% flicker-free, zero-frame gap, perfectly seamless transition on real hardware.
+### 4.3 Stale Request Rejection (Generation Semantics)
+- All state changes increment a monotonic generation counter per output.
+- Requests with older generation IDs are rejected over IPC, preventing race conditions during rapid switching.
 
 ------------------------------------------------------------------------
 
-## 5. Target Media Profile
-
-Default:
+## 5. Repository Layout (as of Phase 3 completion)
 
 ``` text
-Container: MP4
-Codec: H.264/AVC
-Pixel format: yuv420p
-FPS: 30
-Audio: none
-Subtitles: none
-Progressive: preferred/required
-Max width: 3840
-Max height: 2160
-```
-
-Optional later:
-
-``` text
-24 fps
-```
-
-Reject before conversion:
-
-``` text
-width > 3840
-OR
-height > 2160
-```
-
-Examples:
-
-``` text
-3840x2160  OK
-3840x1600  OK
-2560x1440  OK
-5120x1440  REJECT
-7680x2160  REJECT
-```
-
-------------------------------------------------------------------------
-
-## 6. Important Corrections to Earlier Assumptions
-
-Do not reintroduce these claims:
-
-### Do not claim universal HW decode
-
-Correct:
-
-> Prefer available hardware decoding and fall back when necessary.
-
-Incorrect:
-
-> H.264 guarantees hardware decoding on Intel/AMD/NVIDIA.
-
-### Do not claim guaranteed Zero Copy
-
-Correct:
-
-> Prefer DMABUF-compatible paths when negotiated.
-
-Incorrect:
-
-> DMABUF/waylandsink always gives zero-copy.
-
-### Do not claim Direct Scanout
-
-Correct:
-
-> The compositor may optimize presentation/scanout depending on its own
-> conditions.
-
-Incorrect:
-
-> BACKGROUND layer guarantees Direct Scanout.
-
-### Do not claim fixed CPU/RAM numbers
-
-Correct:
-
-> Performance targets must be measured on actual hardware.
-
-------------------------------------------------------------------------
-
-## 7. Proposed Repository Layout
-
-Start simple.
-
-``` text
-wallpaper-project/
+Fluffy/
 ├── Cargo.toml
 ├── Cargo.lock
-├── README.md
-├── LICENSE
+├── build.rs
 ├── docs/
 │   ├── TECHNICAL_DESIGN.md
 │   └── SESSION_HANDOVER.md
 ├── src/
-│   ├── main.rs
-│   ├── daemon/
-│   ├── ipc/
-│   ├── wayland/
-│   ├── playback/
-│   ├── cache/
-│   ├── config/
-│   └── error.rs
-└── tests/
-```
-
-Do not over-engineer the workspace before the Wayland/GStreamer PoC
-works.
-
-------------------------------------------------------------------------
-
-## 8. Suggested Implementation Sequence
-
-### Step 1 --- Environment audit
-
-Record:
-
-``` bash
-rustc --version
-cargo --version
-gst-launch-1.0 --version
-gst-inspect-1.0 waylandsink
-gst-inspect-1.0 h264parse
-gst-inspect-1.0 avdec_h264
-```
-
-Also inspect available hardware decoder plugins.
-
-Record compositor/environment details.
-
-------------------------------------------------------------------------
-
-### Step 2 --- Minimal layer-shell surface
-
-Implement:
-
--   Wayland connection
--   registry discovery
--   `wl_compositor`
--   `wl_output`
--   layer-shell
--   BACKGROUND surface
--   configure/ack handling
--   fullscreen anchoring
-
-No GStreamer yet.
-
-Success criterion:
-
-``` text
-A solid-color BACKGROUND surface is visible on the target output.
+│   ├── main.rs                 (CLI subcommands & daemon entry)
+│   ├── error.rs                (Consolidated FluffyError)
+│   ├── daemon/                 (Daemon controller & output manager)
+│   │   ├── mod.rs
+│   │   └── controller.rs
+│   ├── ipc/                    (Unix domain socket IPC subsystem)
+│   │   ├── mod.rs
+│   │   ├── protocol.rs         (JSON-RPC envelopes & validation)
+│   │   ├── server.rs           (Non-blocking IpcServer & stale cleanup)
+│   │   └── client.rs           (Timeout-safe IpcClient)
+│   ├── playback/               (GStreamer playback core)
+│   │   ├── mod.rs
+│   │   ├── pipeline.rs         (PipelineHandle & Wayland context bind)
+│   │   ├── player.rs           (VideoPlayer trait & GstVideoPlayer)
+│   │   └── state.rs            (PlaybackState)
+│   └── wayland/                (Wayland client core)
+│       ├── mod.rs
+│       ├── connection.rs       (WaylandContext & registry)
+│       └── layer_surface.rs    (WallpaperSurface on Layer::Bottom)
+├── test.mp4
+└── test2.mp4
 ```
 
 ------------------------------------------------------------------------
 
-### Step 3 --- Attach GStreamer
-
-Create the smallest possible pipeline:
-
-``` text
-filesrc
- ! qtdemux
- ! h264parse
- ! decoder
- ! waylandsink
-```
-
-or use an equivalent controlled GStreamer construction.
-
-Do not optimize pipeline selection yet.
-
-Success criterion:
-
-``` text
-test.mp4 -> existing layer-shell surface
-```
-
-------------------------------------------------------------------------
-
-### Step 4 --- Verify looping
-
-Verify EOS handling and restart without destroying the layer-shell
-surface.
-
-------------------------------------------------------------------------
-
-### Step 5 --- Measure
-
-Measure baseline:
-
--   RSS
--   CPU
--   dropped frames
--   decoder utilization
--   first-frame latency
-
-Record the exact machine/GPU/driver/GStreamer versions.
-
-------------------------------------------------------------------------
-
-### Step 6 --- Playback abstraction
-
-Only after the PoC works:
-
-``` rust
-trait VideoPlayer {
-    fn play(&mut self, video: &Path) -> Result<()>;
-    fn pause(&mut self) -> Result<()>;
-    fn resume(&mut self) -> Result<()>;
-    fn stop(&mut self) -> Result<()>;
-}
-```
-
-The exact trait can be adapted to the final GStreamer design.
-
-------------------------------------------------------------------------
-
-### Step 7 --- IPC
-
-Implement:
-
-``` text
-status
-set-video
-pause
-resume
-stop
-reload
-```
-
-Use:
-
-``` text
-request_id
-generation
-```
-
-in the protocol.
-
-Test stale requests.
-
-------------------------------------------------------------------------
-
-### Step 8 --- Cache/import
-
-Implement:
-
-``` text
-ffprobe
- -> validate
- -> ffmpeg
- -> temp file
- -> atomic rename
- -> metadata
-```
-
-No shell invocation.
-
-Use process argument arrays.
-
-------------------------------------------------------------------------
-
-### Step 9 --- Multi-output
-
-Implement:
-
-``` text
-OutputManager
-    |
-    +-- OutputPlayer(DP-1)
-    +-- OutputPlayer(DP-2)
-```
-
-Do not attempt shared decoding yet.
-
-------------------------------------------------------------------------
-
-### Step 10 --- GUI
-
-Only now implement `libcosmic` settings.
-
-Responsibilities:
-
--   choose video
--   show validation
--   start conversion
--   show conversion result
--   assign output
--   send daemon commands
-
-The GUI must never be the owner of playback state.
-
-------------------------------------------------------------------------
-
-## 9. IPC Initial Protocol
-
-Example:
-
-``` json
-{
-  "request_id": 1,
-  "generation": 7,
-  "command": "set_video",
-  "output": "DP-1",
-  "path": "/home/user/.cache/my-wallpaper/objects/example.mp4"
-}
-```
-
-Response:
-
-``` json
-{
-  "request_id": 1,
-  "generation": 7,
-  "ok": true
-}
-```
-
-Error:
-
-``` json
-{
-  "request_id": 1,
-  "generation": 7,
-  "ok": false,
-  "error": {
-    "code": "VIDEO_NOT_FOUND",
-    "message": "Cached video was not found"
-  }
-}
-```
-
-Protocol details can be changed before implementation, but the
-request/generation concept should remain.
-
-------------------------------------------------------------------------
-
-## 10. First Test Matrix
+## 6. Updated Test Matrix
 
 ### Layer Shell
+- [x] `Layer::Bottom` surface appears (Real-hardware-tested)
+- [x] Surface covers output geometry (Real-hardware-tested)
+- [x] Surface disappears cleanly and restores wallpaper (Real-hardware-tested)
+- [ ] Output removal / hotplug handling (Phase 5)
 
--   [ ] BACKGROUND surface appears
--   [ ] surface covers output
--   [ ] surface disappears cleanly
--   [ ] output removal does not crash daemon
+### GStreamer Playback Core
+- [x] H.264 playback via hardware decoder (`nvh264dec`) (Real-hardware-tested)
+- [x] Seamless loop on EOS without recreation (Real-hardware-tested)
+- [x] Pause and resume state transitions (Real-hardware-tested)
+- [x] Dual-pipeline flicker-free switching (Real-hardware-tested)
+- [x] Stop & unmap (Real-hardware-tested)
+- [ ] Software decoder fallback (`avdec_h264`) explicit test
 
-### GStreamer
+### IPC & Daemon
+- [x] Unix socket bind & non-blocking poll (Real-hardware-tested)
+- [x] Stale socket cleanup on crash/restart (Real-hardware-tested)
+- [x] JSON-RPC serialization & deserialization (Unit-tested & Real-hardware-tested)
+- [x] Malformed JSON & oversized request rejection (Unit-tested)
+- [x] `status` command (Real-hardware-tested)
+- [x] `set-video` command (Real-hardware-tested)
+- [x] `pause` / `resume` / `stop` / `reload` commands (Real-hardware-tested)
+- [x] Generation semantics & stale request rejection (Unit-tested & Real-hardware-tested)
+- [x] Timeout-safe client execution (Integration-tested & Real-hardware-tested)
 
--   [ ] H.264 playback
--   [ ] 30fps
--   [ ] loop
--   [ ] pause
--   [ ] resume
--   [ ] EOS recovery
--   [ ] invalid file error
--   [ ] decoder fallback
+### Viewporter / Scaling
+- [ ] Dynamic destination scaling via `wp_viewporter`
+- [ ] Ultrawide / mixed aspect ratio cropping policies
 
-### Viewporter
-
--   [ ] source rectangle
--   [ ] destination size
--   [ ] 16:9 on 16:9
--   [ ] 16:9 on ultrawide
--   [ ] output resize
-
-### IPC
-
--   [ ] connect
--   [ ] status
--   [ ] set-video
--   [ ] pause
--   [ ] resume
--   [ ] malformed message
--   [ ] stale generation
--   [ ] client disconnect
-
-### Cache
-
--   [ ] valid cache reuse
--   [ ] invalid cache rejection
--   [ ] conversion failure cleanup
--   [ ] concurrent writes
--   [ ] atomic rename
--   [ ] cache eviction later
+### Cache & Import (Phase 4 Target)
+- [ ] `ffprobe` stream & codec inspection
+- [ ] 4K resolution limit rejection
+- [ ] `ffmpeg` normalization to H.264/yuv420p/30fps/even dimensions
+- [ ] Atomic file write via temporary file rename
+- [ ] Cache metadata validation and reuse
+- [ ] Cleanup on transcoding failure
 
 ------------------------------------------------------------------------
 
-## 11. Real-Hardware Validation
+## 7. Current Handoff Instructions
 
-Initial target should be the user's known COSMIC test environment:
-
-``` text
-COSMIC Desktop / cosmic-comp
-DP-1: 2560x1440
-DP-2: 2560x1440
-```
-
-After the first successful implementation:
-
-1.  DP-1 only
-2.  DP-2 only
-3.  DP-1 + DP-2
-4.  switch active output
-5.  remove/reconnect output
-6.  mixed resolutions
-7.  scaling
-8.  fractional scaling if available
-
-Do not mark mixed-resolution/DPI support as verified until it has been
-tested.
-
-------------------------------------------------------------------------
-
-## 12. Performance Benchmark Plan
-
-At minimum:
-
-  Scenario     Measure
-  ------------ -------------
-  1080p30 x1   CPU/RSS/GPU
-  1440p30 x1   CPU/RSS/GPU
-  4K30 x1      CPU/RSS/GPU
-  1440p30 x2   CPU/RSS/GPU
-  4K30 x2      CPU/RSS/GPU
-
-Record:
-
-``` text
-CPU %
-RSS
-GPU 3D utilization
-video decoder utilization
-dropped frames
-first frame latency
-switch latency
-```
-
-Do not compare measurements unless the GPU, driver, compositor,
-GStreamer version, and test media are recorded.
-
-------------------------------------------------------------------------
-
-## 13. Known Risks / Stop Conditions
-
-### Stop condition A
-
-If `waylandsink` cannot reliably target the layer-shell surface:
-
-**Stop feature development.**
-
-Do not build the GUI around an unproven playback backend.
-
-### Stop condition B
-
-If the target GStreamer stack cannot provide the desired hardware path:
-
-Do not promise hardware decode.
-
-Document the actual fallback.
-
-### Stop condition C
-
-If viewporter behavior is inconsistent:
-
-First establish a correct fixed-resolution path, then revisit scaling.
-
-------------------------------------------------------------------------
-
-## 14. Definition of "Ready for GUI"
-
-The project is not ready for GUI work until all are true:
-
--   [ ] Layer-shell PoC works.
--   [ ] GStreamer video is visible on the layer surface.
--   [ ] Loop works.
--   [ ] Surface remains stable during playback.
--   [ ] At least one output is reliable.
--   [ ] Basic output reconfiguration does not crash.
--   [ ] CPU/RAM baseline recorded.
--   [ ] Playback API boundary is stable enough for IPC.
-
-------------------------------------------------------------------------
-
-## 15. What the Next Developer Should Do First
-
-### Immediate task
-
-Create the repository skeleton and implement **only the Phase 1 PoC**.
-
-Do not implement:
-
--   GUI
--   ffmpeg conversion
--   cache
--   systemd integration
--   multi-output optimization
--   playlists
-
-until the following question is answered experimentally:
-
-> **Can the selected GStreamer Wayland sink render H.264 frames reliably
-> into a Rust-created `wlr-layer-shell` BACKGROUND surface under
-> COSMIC/cosmic-comp?**
-
-That answer determines whether the rest of the architecture can proceed
-unchanged.
-
-------------------------------------------------------------------------
-
-## 16. Documentation Rules
-
-Every implementation session should update:
-
-``` text
-docs/TECHNICAL_DESIGN.md
-docs/SESSION_HANDOVER.md
-```
-
-Record:
-
--   current phase
--   completed items
--   failed experiments
--   exact dependency versions when relevant
--   hardware/compositor used for validation
--   test commands
--   test results
--   known limitations
--   next concrete task
-
-Do not mark an item "verified" merely because it compiles.
-
-For Wayland/GStreamer behavior, distinguish:
-
-``` text
-Implemented
-Compiled
-Unit-tested
-Integration-tested
-Real-hardware-tested
-```
-
-------------------------------------------------------------------------
-
-## 17. Final Architecture Goal
-
-``` text
-                 +----------------------+
-                 |  libcosmic GUI       |
-                 |  (short-lived)       |
-                 +----------+-----------+
-                            |
-                       Unix socket
-                            |
-                            v
-                 +----------------------+
-                 | Wallpaper daemon     |
-                 |                      |
-                 | IPC                  |
-                 | Output manager       |
-                 | Playback manager     |
-                 | Cache manager        |
-                 +----+------------+----+
-                      |            |
-                   Output 1     Output 2
-                      |            |
-                LayerShell    LayerShell
-                      |            |
-                GStreamer     GStreamer
-                      |            |
-                    Wayland compositor
-                            |
-                         Display
-```
-
-The daemon is the product core.
-
-The GUI is a client.
-
-The converter/cache is an import subsystem.
-
-Wayland/GStreamer integration is the primary technical risk.
-
-------------------------------------------------------------------------
-
-## 18. Current Handoff Summary
-
-**Current phase:** Architecture / design.
-
-**Primary next action:** Build the minimal Rust + layer-shell +
-GStreamer PoC.
-
-**Primary risk:** Reliable rendering from GStreamer `waylandsink` into
-an application-owned layer-shell surface under COSMIC.
-
-**Do not proceed to GUI until that risk is resolved.**
-
-**Success milestone:** One real COSMIC output displays a looping
-H.264/MP4 video through the daemon with a stable BACKGROUND layer
-surface and documented CPU/RAM behavior.
+1. **Current State:**
+   Phase 1, 2, and 3 are **COMPLETE** and verified on real hardware under COSMIC Desktop.
+2. **Next Developer Action:**
+   Proceed to **Phase 4: Cache / Import / Normalize** (`src/cache/`).
+   - Implement `ffprobe` video validator.
+   - Implement `ffmpeg` normalizer.
+   - Implement atomic cache manager (`~/.cache/fluffy/`).
+   - Add unit tests for 4K boundary rejection, odd-dimension normalization, and cache keys.
+3. **Guardrails:**
+   - Do NOT start GUI development yet (`libcosmic`).
+   - Do NOT claim universal hardware decoding or Direct Scanout.
+   - Preserve non-destructive overlay architecture (`Layer::Bottom`).

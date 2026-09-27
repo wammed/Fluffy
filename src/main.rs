@@ -1,224 +1,248 @@
+pub mod daemon;
 pub mod error;
+pub mod ipc;
 pub mod playback;
 pub mod wayland;
 
 use std::{
     env,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Instant,
 };
-
-use smithay_client_toolkit::shell::wlr_layer::Layer;
 
 use crate::{
-    error::Result,
-    playback::{GstVideoPlayer, VideoPlayer},
-    wayland::{WallpaperSurface, WaylandContext},
+    daemon::WallpaperDaemon,
+    error::{FluffyError, Result},
+    ipc::{default_socket_path, IpcClient},
 };
 
+fn print_help() {
+    println!(
+        r#"Fluffy Video Wallpaper Manager - Phase 3 (IPC & Daemon)
+
+USAGE:
+    fluffy [COMMAND] [OPTIONS]
+
+COMMANDS:
+    daemon, run          Run the wallpaper daemon (default if no command given)
+    status               Query daemon and output status via IPC
+    set-video <PATH>     Change video wallpaper via IPC
+    pause                Pause video playback
+    resume               Resume video playback
+    stop                 Stop video playback
+    reload               Reload current wallpaper video
+    help, --help         Print this help message
+
+OPTIONS for 'daemon' / 'run':
+    --socket <PATH>      Unix socket path (default: $XDG_RUNTIME_DIR/fluffy.sock)
+    --output <NAME>      Bind to specific Wayland output (e.g. DP-1)
+    --video <PATH>       Start playback immediately with specified video
+    --loop               Continuous test loop
+    --switch-loop        Continuous alternating video test loop
+
+OPTIONS for IPC client commands:
+    --socket <PATH>      Target daemon Unix socket path
+    --output <NAME>      Target specific output (default: all outputs)
+    --generation <NUM>   Generation number for video switch
+"#
+    );
+}
+
 fn main() -> Result<()> {
-    println!("=== Fluffy Video Wallpaper Manager (Phase 2 Playback Core) ===");
-
     let args: Vec<String> = env::args().collect();
-    let requested_output_name = args.get(1).filter(|a| !a.starts_with("--"));
-    let continuous_loop = args.iter().any(|a| a == "--loop");
+    let command = args.get(1).map(|s| s.as_str()).unwrap_or("daemon");
 
-    // 1. Initialize Wayland Context
-    println!("[Main] Initializing Wayland connection...");
-    let mut wayland_ctx = WaylandContext::init()?;
-
-    let outputs = wayland_ctx.outputs();
-    println!("[Main] Discovered Wayland outputs:");
-    for (name, _) in &outputs {
-        println!("  - {name}");
+    match command {
+        "help" | "--help" | "-h" => {
+            print_help();
+            Ok(())
+        }
+        "status" => cmd_status(&args[2..]),
+        "set-video" | "set_video" => cmd_set_video(&args[2..]),
+        "pause" => cmd_pause(&args[2..]),
+        "resume" => cmd_resume(&args[2..]),
+        "stop" => cmd_stop(&args[2..]),
+        "reload" => cmd_reload(&args[2..]),
+        "daemon" | "run" => cmd_daemon(&args[2..]),
+        cmd if cmd.starts_with("--") => cmd_daemon(&args[1..]),
+        cmd => {
+            // Check if it's a file path meant for daemon initial video, or invalid command
+            if Path::new(cmd).exists() {
+                cmd_daemon(&args[1..])
+            } else {
+                eprintln!("Unknown command: '{cmd}'. Run 'fluffy help' for usage.");
+                std::process::exit(1);
+            }
+        }
     }
+}
 
-    // Select target output
-    let target_output = if let Some(req_name) = requested_output_name {
-        wayland_ctx.find_output(req_name)
-    } else {
-        outputs.first().map(|(_, o)| o.clone())
+fn parse_socket_arg(args: &[String]) -> PathBuf {
+    for i in 0..args.len() {
+        if args[i] == "--socket" && i + 1 < args.len() {
+            return PathBuf::from(&args[i + 1]);
+        }
+    }
+    default_socket_path()
+}
+
+fn parse_output_arg(args: &[String]) -> Option<String> {
+    for i in 0..args.len() {
+        if args[i] == "--output" && i + 1 < args.len() {
+            return Some(args[i + 1].clone());
+        }
+    }
+    None
+}
+
+fn parse_generation_arg(args: &[String]) -> Option<u64> {
+    for i in 0..args.len() {
+        if args[i] == "--generation" && i + 1 < args.len() {
+            return args[i + 1].parse().ok();
+        }
+    }
+    None
+}
+
+fn cmd_daemon(args: &[String]) -> Result<()> {
+    println!("=== Fluffy Video Wallpaper Manager Daemon (Phase 3 IPC) ===");
+
+    let socket_path = parse_socket_arg(args);
+    let requested_output = parse_output_arg(args);
+
+    let initial_video: Option<PathBuf> = {
+        let mut vid = None;
+        let mut i = 0;
+        while i < args.len() {
+            if args[i] == "--video" && i + 1 < args.len() {
+                vid = Some(PathBuf::from(&args[i + 1]));
+                break;
+            } else if (args[i] == "--socket" || args[i] == "--output") && i + 1 < args.len() {
+                i += 2;
+                continue;
+            } else if !args[i].starts_with("--") && Path::new(&args[i]).exists() {
+                vid = Some(PathBuf::from(&args[i]));
+                break;
+            }
+            i += 1;
+        }
+        vid
     };
 
-    let target_output_name = target_output.as_ref().and_then(|o| {
-        wayland_ctx
-            .state
-            .output_state
-            .info(o)
-            .and_then(|i| i.name)
-    });
-    println!("[Main] Selected target output: {:?}", target_output_name);
-
-    // 2. Create Wallpaper Surface on Layer::Bottom (non-destructive overlay)
-    println!("[Main] Creating wallpaper surface on Layer::Bottom...");
-    let mut surface = WallpaperSurface::new(&mut wayland_ctx, target_output.as_ref(), Layer::Bottom)?;
-    println!(
-        "[Main] Wallpaper surface initialized (raw ptr: 0x{:x}, geometry: {}x{})",
-        surface.raw_surface_ptr, surface.width, surface.height
-    );
-
-    // 3. Initialize GStreamer Video Player
-    println!("[Main] Initializing GStreamer playback core...");
-    let mut player = GstVideoPlayer::new(
-        wayland_ctx.raw_display_ptr(),
-        surface.raw_surface_ptr,
-        surface.width,
-        surface.height,
-    )?;
-
-    // 4. Handle graceful termination (Ctrl+C)
     let exit_flag = Arc::new(AtomicBool::new(false));
     {
         let exit_flag = exit_flag.clone();
         ctrlc::set_handler(move || {
-            println!("\n[Main] Received shutdown signal (Ctrl+C)...");
+            println!("\n[Main] Shutdown signal (Ctrl+C) received...");
             exit_flag.store(true, Ordering::SeqCst);
         })
         .ok();
     }
 
-    let video1 = PathBuf::from("test.mp4");
-    let video2 = PathBuf::from("test2.mp4");
+    let mut daemon = WallpaperDaemon::new(
+        &socket_path,
+        requested_output.as_deref(),
+        exit_flag.clone(),
+    )?;
 
-    let switch_loop = args.iter().any(|a| a == "--switch-loop");
-
-    if continuous_loop {
-        // Continuous loop mode with single video
-        println!("[Main] Starting continuous loop mode with {:?}...", video1);
-        player.play(&video1)?;
-
-        while !exit_flag.load(Ordering::SeqCst) {
-            wayland_ctx.dispatch_pending()?;
-            if !player.poll_events()? {
-                eprintln!("[Main] Playback failed");
-                break;
-            }
-        }
-    } else if switch_loop {
-        // Continuous alternating switch mode (every 3 seconds) for manual visual inspection
-        println!("[Main] Starting continuous switch-loop mode (alternating test.mp4 <-> test2.mp4 every 3s)...");
-        println!("[Main] Press Ctrl+C anytime to stop and cleanly teardown.");
-        player.play(&video1)?;
-        let mut current_video = 1;
-        let mut last_switch = Instant::now();
-
-        while !exit_flag.load(Ordering::SeqCst) {
-            wayland_ctx.dispatch_pending()?;
-            if !player.poll_events()? {
-                break;
-            }
-
-            if last_switch.elapsed().as_secs() >= 3 {
-                if current_video == 1 {
-                    println!("\n[SwitchLoop] Switching A (test.mp4) -> B (test2.mp4)...");
-                    player.play(&video2)?;
-                    current_video = 2;
-                } else {
-                    println!("\n[SwitchLoop] Switching B (test2.mp4) -> A (test.mp4)...");
-                    player.play(&video1)?;
-                    current_video = 1;
-                }
-                last_switch = Instant::now();
-            }
-        }
-    } else {
-        // Comprehensive Video Switching Verification Scenario:
-        // 1. Initial play video A (test.mp4, 3s)
-        // 2. Switch A -> B (test2.mp4, 3s) [Normal switch, different content]
-        // 3. Switch B -> A (test.mp4, 3s) [Reverse switch]
-        // 4. Pause (1.5s) & Resume (2s) verification
-        // 5. Rapid continuous switching: A -> B (1.5s) -> A (1.5s) -> B (1.5s) -> A (1.5s)
-        // 6. Loop playback verification (3s) -> Clean teardown
-        println!("[Main] Starting Comprehensive Video Switching Verification Scenario:");
-        println!("       Step 1: Play 'test.mp4' (3s)");
-        println!("       Step 2: Normal switch -> 'test2.mp4' (3s)");
-        println!("       Step 3: Reverse switch -> 'test.mp4' (3s)");
-        println!("       Step 4: Pause (1.5s) & Resume (2s)");
-        println!("       Step 5: Rapid continuous switches (A -> B -> A -> B -> A)");
-        println!("       Step 6: Completion & Clean teardown");
-
-        // Step 1: Play video A
-        player.play(&video1)?;
-        let mut step = 1;
-        let mut step_start = Instant::now();
-
-        while !exit_flag.load(Ordering::SeqCst) {
-            wayland_ctx.dispatch_pending()?;
-            if !player.poll_events()? {
-                break;
-            }
-
-            let elapsed_ms = step_start.elapsed().as_millis();
-
-            match step {
-                1 if elapsed_ms >= 3000 => {
-                    println!("\n[Scenario] Step 2: Normal Switch A (test.mp4) -> B (test2.mp4)...");
-                    player.play(&video2)?;
-                    step = 2;
-                    step_start = Instant::now();
-                }
-                2 if elapsed_ms >= 3000 => {
-                    println!("\n[Scenario] Step 3: Reverse Switch B (test2.mp4) -> A (test.mp4)...");
-                    player.play(&video1)?;
-                    step = 3;
-                    step_start = Instant::now();
-                }
-                3 if elapsed_ms >= 3000 => {
-                    println!("\n[Scenario] Step 4a: Testing PAUSE...");
-                    player.pause()?;
-                    step = 4;
-                    step_start = Instant::now();
-                }
-                4 if elapsed_ms >= 1500 => {
-                    println!("\n[Scenario] Step 4b: Testing RESUME...");
-                    player.resume()?;
-                    step = 5;
-                    step_start = Instant::now();
-                }
-                5 if elapsed_ms >= 2000 => {
-                    println!("\n[Scenario] Step 5a: Rapid Switch -> B (test2.mp4)...");
-                    player.play(&video2)?;
-                    step = 6;
-                    step_start = Instant::now();
-                }
-                6 if elapsed_ms >= 1500 => {
-                    println!("\n[Scenario] Step 5b: Rapid Switch -> A (test.mp4)...");
-                    player.play(&video1)?;
-                    step = 7;
-                    step_start = Instant::now();
-                }
-                7 if elapsed_ms >= 1500 => {
-                    println!("\n[Scenario] Step 5c: Rapid Switch -> B (test2.mp4)...");
-                    player.play(&video2)?;
-                    step = 8;
-                    step_start = Instant::now();
-                }
-                8 if elapsed_ms >= 1500 => {
-                    println!("\n[Scenario] Step 5d: Rapid Switch -> A (test.mp4)...");
-                    player.play(&video1)?;
-                    step = 9;
-                    step_start = Instant::now();
-                }
-                9 if elapsed_ms >= 3000 => {
-                    println!("\n[Scenario] All verification steps completed successfully!");
-                    break;
-                }
-                _ => {}
-            }
+    // If an initial video was specified, start playing it
+    if let Some(video) = initial_video {
+        println!("[Main] Starting initial playback: {:?}", video);
+        let req = crate::ipc::RequestEnvelope::new(0, crate::ipc::CommandType::SetVideo)
+            .with_path(video);
+        let resp = daemon.handle_request(&req);
+        if !resp.success {
+            eprintln!("[Main] Initial video playback failed: {:?}", resp.error);
         }
     }
 
-    // 5. Clean teardown
-    println!("[Main] Stopping playback...");
-    player.stop()?;
+    // Run the main daemon loop
+    daemon.run()
+}
 
-    println!("[Main] Destroying Wayland surface and restoring desktop wallpaper...");
-    surface.destroy(&mut wayland_ctx);
+fn cmd_status(args: &[String]) -> Result<()> {
+    let socket = parse_socket_arg(args);
+    let client = IpcClient::new(&socket);
+    let status = client.status()?;
 
-    println!("[Main] Fluffy exited gracefully.");
+    println!("Fluffy Daemon Status (v{})", status.daemon_version);
+    println!("Connected Socket: {:?}", socket);
+    println!("Outputs ({} total):", status.outputs.len());
+    for out in status.outputs {
+        println!("  - [{}] State: {}", out.name, out.state);
+        println!("      Current Video: {}", out.current_video.unwrap_or_else(|| "None".to_string()));
+        println!("      Generation:    {}", out.generation);
+        println!("      Loop Count:    {}", out.loop_count);
+    }
+
+    Ok(())
+}
+
+fn cmd_set_video(args: &[String]) -> Result<()> {
+    let socket = parse_socket_arg(args);
+    let output = parse_output_arg(args);
+    let generation = parse_generation_arg(args);
+
+    let path_str = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .ok_or_else(|| FluffyError::Ipc("Missing video path for 'set-video'".to_string()))?;
+
+    let path = PathBuf::from(path_str);
+    let abs_path = if path.is_absolute() {
+        path
+    } else {
+        env::current_dir()?.join(path)
+    };
+
+    if !abs_path.exists() {
+        return Err(FluffyError::Ipc(format!(
+            "Video file does not exist: {:?}",
+            abs_path
+        )));
+    }
+
+    let client = IpcClient::new(&socket);
+    client.set_video(&abs_path, output.as_deref(), generation)?;
+
+    println!("Successfully requested video change to: {:?}", abs_path);
+    Ok(())
+}
+
+fn cmd_pause(args: &[String]) -> Result<()> {
+    let socket = parse_socket_arg(args);
+    let output = parse_output_arg(args);
+    let client = IpcClient::new(&socket);
+    client.pause(output.as_deref())?;
+    println!("Playback paused.");
+    Ok(())
+}
+
+fn cmd_resume(args: &[String]) -> Result<()> {
+    let socket = parse_socket_arg(args);
+    let output = parse_output_arg(args);
+    let client = IpcClient::new(&socket);
+    client.resume(output.as_deref())?;
+    println!("Playback resumed.");
+    Ok(())
+}
+
+fn cmd_stop(args: &[String]) -> Result<()> {
+    let socket = parse_socket_arg(args);
+    let output = parse_output_arg(args);
+    let client = IpcClient::new(&socket);
+    client.stop(output.as_deref())?;
+    println!("Playback stopped.");
+    Ok(())
+}
+
+fn cmd_reload(args: &[String]) -> Result<()> {
+    let socket = parse_socket_arg(args);
+    let client = IpcClient::new(&socket);
+    client.reload()?;
+    println!("Reloaded wallpaper.");
     Ok(())
 }

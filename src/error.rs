@@ -29,6 +29,12 @@ pub enum FluffyError {
     #[error("Output '{0}' not found")]
     OutputNotFound(String),
 
+    #[error("IPC error: {0}")]
+    Ipc(String),
+
+    #[error("IPC JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

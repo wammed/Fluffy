@@ -1,0 +1,207 @@
+use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+
+use crate::error::{FluffyError, Result};
+
+pub const MAX_REQUEST_SIZE: usize = 65536; // 64 KB
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandType {
+    Status,
+    #[serde(alias = "set-video")]
+    SetVideo,
+    Pause,
+    Resume,
+    Stop,
+    Reload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestEnvelope {
+    pub request_id: u64,
+    #[serde(default)]
+    pub generation: Option<u64>,
+    pub command: CommandType,
+    #[serde(default)]
+    pub output: Option<String>,
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+}
+
+impl RequestEnvelope {
+    pub fn new(request_id: u64, command: CommandType) -> Self {
+        Self {
+            request_id,
+            generation: None,
+            command,
+            output: None,
+            path: None,
+        }
+    }
+
+    pub fn with_generation(mut self, generation: u64) -> Self {
+        self.generation = Some(generation);
+        self
+    }
+
+    pub fn with_output<S: Into<String>>(mut self, output: S) -> Self {
+        self.output = Some(output.into());
+        self
+    }
+
+    pub fn with_path<P: Into<PathBuf>>(mut self, path: P) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match self.command {
+            CommandType::SetVideo => {
+                if self.path.is_none() {
+                    return Err(FluffyError::Ipc(
+                        "'set_video' command requires a valid 'path' field".to_string(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResponseEnvelope {
+    pub request_id: u64,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl ResponseEnvelope {
+    pub fn success(request_id: u64, data: Option<serde_json::Value>) -> Self {
+        Self {
+            request_id,
+            success: true,
+            data,
+            error: None,
+        }
+    }
+
+    pub fn failure<S: Into<String>>(request_id: u64, error: S) -> Self {
+        Self {
+            request_id,
+            success: false,
+            data: None,
+            error: Some(error.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputStatus {
+    pub name: String,
+    pub state: String,
+    pub current_video: Option<String>,
+    pub generation: u64,
+    pub loop_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonStatus {
+    pub daemon_version: String,
+    pub outputs: Vec<OutputStatus>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serialize_deserialize_set_video() {
+        let json = r#"{
+            "request_id": 123,
+            "generation": 42,
+            "command": "set_video",
+            "output": "DP-1",
+            "path": "/home/user/video.mp4"
+        }"#;
+
+        let req: RequestEnvelope = serde_json::from_str(json).expect("Failed to deserialize");
+        assert_eq!(req.request_id, 123);
+        assert_eq!(req.generation, Some(42));
+        assert_eq!(req.command, CommandType::SetVideo);
+        assert_eq!(req.output.as_deref(), Some("DP-1"));
+        assert_eq!(req.path.as_deref(), Some(std::path::Path::new("/home/user/video.mp4")));
+
+        req.validate().expect("Validation failed");
+    }
+
+    #[test]
+    fn test_deserialize_alias_kebab_case() {
+        let json = r#"{
+            "request_id": 1,
+            "command": "set-video",
+            "path": "/video.mp4"
+        }"#;
+
+        let req: RequestEnvelope = serde_json::from_str(json).unwrap();
+        assert_eq!(req.command, CommandType::SetVideo);
+    }
+
+    #[test]
+    fn test_set_video_missing_path_fails_validation() {
+        let req = RequestEnvelope {
+            request_id: 1,
+            generation: None,
+            command: CommandType::SetVideo,
+            output: None,
+            path: None,
+        };
+
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn test_status_response_serialization() {
+        let status = DaemonStatus {
+            daemon_version: "0.1.0".to_string(),
+            outputs: vec![OutputStatus {
+                name: "DP-1".to_string(),
+                state: "PLAYING".to_string(),
+                current_video: Some("/path/to/test.mp4".to_string()),
+                generation: 1,
+                loop_count: 5,
+            }],
+        };
+
+        let val = serde_json::to_value(&status).unwrap();
+        let res = ResponseEnvelope::success(999, Some(val));
+        let serialized = serde_json::to_string(&res).unwrap();
+
+        let deserialized: ResponseEnvelope = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.request_id, 999);
+        assert!(deserialized.success);
+        assert!(deserialized.error.is_none());
+        assert!(deserialized.data.is_some());
+    }
+
+    #[test]
+    fn test_malformed_json_fails() {
+        let malformed = "{ invalid json }";
+        let res: std::result::Result<RequestEnvelope, _> = serde_json::from_str(malformed);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_generation_semantics() {
+        let current_gen = 10;
+        let stale_req_gen = 9;
+        let fresh_req_gen = 11;
+
+        assert!(stale_req_gen < current_gen, "Stale request must be strictly less than current generation");
+        assert!(fresh_req_gen >= current_gen, "Fresh request must be greater than or equal to current generation");
+    }
+}

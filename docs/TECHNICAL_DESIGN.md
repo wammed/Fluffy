@@ -979,15 +979,22 @@ Implemented and verified:
 - [x] Automatic seamless loop recovery via EOS `seek_simple(ZERO)`.
 - [x] Clean exit signal handling (SIGINT/Ctrl+C) and surface teardown.
 
-### Phase 3 --- IPC
+### Phase 3 --- IPC [DONE - Real-hardware-tested]
 
-Add:
-
--   Unix socket
--   protocol
--   generation
--   status
--   set-video
+Implemented and verified:
+- [x] Unix domain socket IPC architecture (`src/ipc/`): non-blocking `IpcServer` & timeout-safe `IpcClient`.
+- [x] Safe socket lifecycle: automated stale socket detection/cleanup, restricted file permissions (0600).
+- [x] JSON-RPC/JSONL protocol with Request/Response envelopes and maximum request size enforcement (64KB).
+- [x] Full command suite implemented:
+  - `status`: real-time output state, current playing video, generation, loop count.
+  - `set-video`: dynamic video switching via IPC.
+  - `pause` / `resume`: pause and resume playback via IPC.
+  - `stop`: stop playback and unmap frames.
+  - `reload`: reload current video.
+- [x] Generation semantics (Section 9.3): stale request detection and rejection verified (`gen < current`).
+- [x] CLI subcommand suite integrated in `src/main.rs` (`daemon`, `status`, `set-video`, `pause`, `resume`, `stop`, `reload`).
+- [x] Comprehensive unit & integration tests for serialization, socket communication, stale recovery, and validation.
+- [x] Verified on real COSMIC / Wayland hardware with live daemon and IPC clients.
 
 ### Phase 4 --- Cache/import
 
