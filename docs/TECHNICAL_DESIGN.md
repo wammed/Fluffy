@@ -142,7 +142,7 @@ The measurable goals are instead:
 ### 3.1 Layer Shell
 
 Each output gets a dedicated `wl_surface` with a `zwlr_layer_surface_v1`
-role on the `background` layer.
+role on the `bottom` or `background` layer.
 
 Conceptual model:
 
@@ -151,13 +151,42 @@ Output
   |
   +-- wl_surface
         |
-        +-- zwlr_layer_surface_v1(background)
+        +-- zwlr_layer_surface_v1 (Layer::Bottom / background)
               |
-              +-- video presentation
+              +-- base surface (mapped)
+                    |
+                    +-- wl_subsurface (GStreamer video frames)
 ```
 
 The output object must be explicitly supplied to `get_layer_surface()`
 when the application wants deterministic output binding.
+
+#### 3.1.1 Coexistence with COSMIC Wallpaper Daemon (`cosmic-bg`) & Intentional Overlay Design
+
+> **Architecture & Design Note:**
+> This project intentionally implements a **non-destructive overlay model** rather than terminating or replacing the desktop environment's native wallpaper daemon (`cosmic-bg`).
+
+1. **Why `cosmic-bg` is NOT killed or disabled:**
+   - `cosmic-bg` is an integral part of the COSMIC Desktop session (`cosmic-session`). Terminating or masking it introduces system instability, requires elevated permissions or session modifications, and risks breakage across OS upgrades.
+   - Once `cosmic-bg` renders its initial static image, it remains idle waiting for events. It consumes **0% CPU and 0% GPU**, incurring negligible background resource overhead (idle memory only).
+
+2. **The Overlay Architecture (`Layer::Bottom`):**
+   - By rendering on `zwlr_layer_surface_v1` with `Layer::Bottom`, Fluffy places its video surface directly **above** the `Layer::Background` (where `cosmic-bg` resides), but **below** desktop icons, panels, docks, and normal application windows.
+   - Visual Z-Order:
+     ``` text
+     [Top / Overlay] Windows, Panels, Docks, Desktop Icons
+            ^
+            |
+     [Layer::Bottom] ★ Fluffy Video Wallpaper Surface (covers 100% of output)
+            ^
+            |
+     [Layer::Background] cosmic-bg static wallpaper (idle in background)
+     ```
+
+3. **Graceful Fail-Safe & Clean Teardown:**
+   - If Fluffy exits, pauses, stops, or even crashes unexpectedly, its Wayland surface is automatically unmapped by the compositor.
+   - The user's original desktop wallpaper managed by `cosmic-bg` immediately becomes visible without leaving the screen black and without requiring user intervention or wallpaper reconfiguration.
+   - This design guarantee ensures zero destructive impact on user desktop settings.
 
 ### 3.2 Viewporter
 

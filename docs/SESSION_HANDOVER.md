@@ -125,28 +125,24 @@ This is the primary architecture gate.
 
 ------------------------------------------------------------------------
 
-## 4. Critical Technical Finding
+## 4. Critical Technical Findings & Architecture Decision
 
-GStreamer `waylandsink` creates its own window by default but implements
-`GstVideoOverlay`.
+### 4.1 Non-Destructive Overlay Model (Coexistence with `cosmic-bg`)
 
-Therefore the implementation must investigate the
-existing-window/surface integration rather than assuming:
+**Architectural Decision:**
+The daemon does **NOT** kill, replace, or disrupt the native desktop wallpaper daemon (`cosmic-bg`).
+Instead, it operates as a **non-destructive overlay**:
+- `cosmic-bg` runs on `Layer::Background` and stays idle (0% CPU, 0% GPU).
+- Fluffy creates its surface on `Layer::Bottom` covering the screen directly above `cosmic-bg` and beneath application windows and desktop icons.
+- If Fluffy stops, pauses, or terminates, the original static wallpaper is instantly revealed without black screens or broken session states.
+- This design ensures maximum desktop safety and seamless fallback.
 
-``` text
-layer-shell surface + waylandsink
-```
+### 4.2 GStreamer Subsurface & Parent Mapping Requirement
 
-will automatically connect.
-
-GStreamer documents `GstVideoOverlay` as the mechanism for directing a
-video sink to an application-provided native rendering target.
-
-The exact Wayland handle semantics for the installed GStreamer version
-must be verified experimentally.
-
-If the direct `waylandsink` approach cannot be made reliable, stop and
-reassess the sink architecture before implementing IPC/GUI/cache layers.
+During Phase 1 PoC, the following critical requirements were uncovered and resolved:
+1. **Wayland Display Context Sync**: `waylandsink` must receive the application's Wayland display handle via `GstWaylandDisplayHandleContext` (`gst_wl_display_handle_context_new`), otherwise it attempts an independent connection and rejects external surface binding.
+2. **Parent Layer Surface Mapping**: GStreamer creates a `wl_subsurface` inside the application-supplied `wl_surface`. Under Wayland specifications, a subsurface is **not visible unless the parent surface has an initial buffer attached and committed**. Mapping a transparent initial base buffer on the layer surface makes the video subsurface visible.
+3. **Explicit Render Rectangle**: `overlay.set_render_rectangle(0, 0, width, height)` is strictly required by `waylandsink` when targeting an external surface.
 
 ------------------------------------------------------------------------
 
