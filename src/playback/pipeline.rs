@@ -6,6 +6,7 @@ use gstreamer_video::prelude::*;
 
 use crate::error::{FluffyError, Result};
 
+#[link(name = "gstwayland-1.0")]
 unsafe extern "C" {
     fn gst_wl_display_handle_context_new(
         display: *mut std::ffi::c_void,

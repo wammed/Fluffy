@@ -1,0 +1,20 @@
+[Unit]
+Description=Fluffy Video Wallpaper Manager Daemon
+Documentation=https://github.com/wammed/Fluffy
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+
+[Service]
+Type=simple
+# Attempt to run from user cargo bin or system path
+ExecStart=/usr/bin/env fluffy daemon
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=5
+# Ensure user desktop environment variables are available
+PassEnvironment=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_RUNTIME_DIR XDG_SESSION_TYPE
+Environment=RUST_LOG=fluffy=info
+
+[Install]
+WantedBy=graphical-session.target

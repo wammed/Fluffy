@@ -21,12 +21,19 @@ pub struct WaylandContext {
     pub state: WaylandState,
 }
 
+#[derive(Debug, Clone)]
+pub enum WaylandOutputEvent {
+    AddedOrUpdated(wl_output::WlOutput),
+    Destroyed(wl_output::WlOutput),
+}
+
 pub struct WaylandState {
     pub registry_state: RegistryState,
     pub output_state: OutputState,
     pub compositor_state: CompositorState,
     pub layer_shell: LayerShell,
     pub shm: Shm,
+    pub output_events: Vec<WaylandOutputEvent>,
 }
 
 impl ProvidesRegistryState for WaylandState {
@@ -45,24 +52,30 @@ impl smithay_client_toolkit::output::OutputHandler for WaylandState {
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        tracing::debug!("[Wayland] new_output event received");
+        self.output_events.push(WaylandOutputEvent::AddedOrUpdated(output));
     }
 
     fn update_output(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        tracing::debug!("[Wayland] update_output event received");
+        self.output_events.push(WaylandOutputEvent::AddedOrUpdated(output));
     }
 
     fn output_destroyed(
         &mut self,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        tracing::info!("[Wayland] output_destroyed event received");
+        self.output_events.push(WaylandOutputEvent::Destroyed(output));
     }
 }
 
@@ -143,10 +156,13 @@ impl WaylandContext {
             compositor_state,
             layer_shell,
             shm,
+            output_events: Vec::new(),
         };
 
         // Roundtrip to enumerate globals & outputs
         event_queue.roundtrip(&mut state)?;
+        // Clear initial enumeration events so only post-startup changes are reported
+        state.output_events.clear();
 
         Ok(Self {
             conn,
@@ -181,6 +197,17 @@ impl WaylandContext {
 
     pub fn raw_display_ptr(&self) -> *mut std::ffi::c_void {
         self.conn.backend().display_ptr() as *mut std::ffi::c_void
+    }
+
+    pub fn output_name(&self, output: &wl_output::WlOutput) -> Option<String> {
+        self.state
+            .output_state
+            .info(output)
+            .and_then(|info| info.name)
+    }
+
+    pub fn take_output_events(&mut self) -> Vec<WaylandOutputEvent> {
+        std::mem::take(&mut self.state.output_events)
     }
 
     pub fn dispatch_pending(&mut self) -> Result<()> {

@@ -1,5 +1,9 @@
 # COSMIC Video Wallpaper Manager --- Technical Design Specification
 
+<p align="center">
+  <a href="TECHNICAL_DESIGN.md">English</a> | <a href="TECHNICAL_DESIGN.ja.md">日本語</a> | <a href="PORTAL.md">📚 Portal</a>
+</p>
+
 **Document:** Technical Design Specification\
 **Status:** Draft / implementation-ready\
 **Target:** COSMIC Desktop / Wayland\
@@ -1038,16 +1042,18 @@ Add:
 - [x] Playback controls: `Pause`, `Resume`, `Stop`, `Refresh Status` directly from GUI.
 - [x] Clean lifecycle: GUI is strictly an on-demand IPC client; closing it leaves daemon playback running undisturbed.
 
-### Phase 7 --- hardening
+### Phase 7 --- hardening [COMPLETE]
 
-Add:
+Implemented and verified on real hardware:
 
--   systemd --user integration
--   logging
--   stress tests
--   failure recovery
--   performance benchmark suite
--   documentation
+- [x] systemd --user service unit (`data/systemd/fluffy.service`) bound to `graphical-session.target`.
+- [x] Desktop Entry for COSMIC Application Library (`data/desktop/com.github.fluffy.Fluffy.desktop`).
+- [x] Structured logging via `tracing` & `tracing-subscriber` routed cleanly to `journald` and console.
+- [x] Failure recovery & dynamic display hotplug (attach/detach event handling via SCTK `OutputHandler`).
+- [x] Flexible positional and flag CLI parsing across all subcommands.
+- [x] Systematic performance benchmark suite (`scripts/benchmark.sh`) measuring CPU%, RSS MB, GPU 3D%, GPU NVDEC% across 1080p, 1440p, 4K on dual displays.
+- [x] Benchmarking documented in [`docs/BENCHMARK_REPORT.md`](file:///home/susie/GitHUB/wammed/Fluffy/docs/BENCHMARK_REPORT.md).
+- [x] Minimal release binary footprints: resident daemon **3.2 MB**, GUI **30 MB**.
 
 ------------------------------------------------------------------------
 

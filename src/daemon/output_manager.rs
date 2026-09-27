@@ -39,7 +39,7 @@ impl OutputManager {
         name: String,
         wl_out: wl_output::WlOutput,
     ) -> Result<()> {
-        println!("[OutputManager] Initializing output '{name}'...");
+        tracing::info!("[OutputManager] Initializing output '{name}'...");
         let surface = WallpaperSurface::new(ctx, Some(&wl_out), Layer::Bottom)?;
         let width = surface.width;
         let height = surface.height;
@@ -65,6 +65,35 @@ impl OutputManager {
         );
 
         Ok(())
+    }
+
+    pub fn remove_output_by_wl(
+        &mut self,
+        ctx: &mut WaylandContext,
+        wl_out: &wl_output::WlOutput,
+    ) -> Option<String> {
+        let name_to_remove = self
+            .outputs
+            .iter()
+            .find(|(_, out)| &out.output == wl_out)
+            .map(|(name, _)| name.clone());
+
+        if let Some(name) = name_to_remove {
+            if let Some(mut out) = self.outputs.remove(&name) {
+                tracing::info!("[OutputManager] Output '{name}' disconnected. Tearing down playback & surface...");
+                let _ = out.player.stop();
+                out.surface.destroy(ctx);
+                return Some(name);
+            }
+        }
+        None
+    }
+
+    /// Finds any currently playing video across managed outputs to use as default for newly attached displays.
+    pub fn default_active_video(&self) -> Option<std::path::PathBuf> {
+        self.outputs
+            .values()
+            .find_map(|out| out.player.current_video().map(|p| p.to_path_buf()))
     }
 
     pub fn len(&self) -> usize {
@@ -120,7 +149,7 @@ impl OutputManager {
                 out.generation += 1;
             }
 
-            println!(
+            tracing::info!(
                 "[OutputManager] Setting video for output '{}' (gen: {}): {:?}",
                 target, out.generation, video_path
             );
@@ -140,7 +169,7 @@ impl OutputManager {
                     out.generation += 1;
                 }
 
-                println!(
+                tracing::info!(
                     "[OutputManager] Setting video for output '{}' (gen: {}): {:?}",
                     name, out.generation, video_path
                 );
@@ -219,7 +248,7 @@ impl OutputManager {
     pub fn poll_events(&mut self) -> Result<()> {
         for (name, out) in self.outputs.iter_mut() {
             if !out.player.poll_events()? {
-                eprintln!("[OutputManager] Output '{}' playback encountered fatal error", name);
+                tracing::error!("[OutputManager] Output '{}' playback encountered fatal error", name);
             }
         }
         Ok(())
@@ -228,11 +257,11 @@ impl OutputManager {
     /// Stops players and destroys surfaces for all outputs cleanly.
     pub fn teardown_all(&mut self, ctx: &mut WaylandContext) {
         for (name, mut out) in self.outputs.drain() {
-            println!("[OutputManager] Stopping player on output '{}'...", name);
+            tracing::info!("[OutputManager] Stopping player on output '{}'...", name);
             let _ = out.player.stop();
-            println!("[OutputManager] Destroying surface on output '{}'...", name);
+            tracing::info!("[OutputManager] Destroying surface on output '{}'...", name);
             out.surface.destroy(ctx);
         }
-        println!("[OutputManager] Teardown complete. All desktop wallpapers restored.");
+        tracing::info!("[OutputManager] Teardown complete. All desktop wallpapers restored.");
     }
 }

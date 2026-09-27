@@ -1,0 +1,332 @@
+# COSMIC 動画壁紙マネージャー --- セッション引継ぎ書 (Session Handover)
+
+<p align="center">
+  <a href="SESSION_HANDOVER.md">English</a> | <a href="SESSION_HANDOVER.ja.md">日本語</a> | <a href="PORTAL.ja.md">📚 ポータル</a>
+</p>
+
+**ステータス:** Phase 7 (堅牢化、systemd、性能ベンチマーク) 完了 (実機検証済み) --- 全計画フェーズ完了。\
+**最終更新日:** 2026-09-27\
+**フェーズ進捗サマリー:**
+- **Phase 1: Wayland / GStreamer PoC** --- **完了** (実機検証済み)
+- **Phase 2: 再生コア (Playback Core)** --- **完了** (実機検証済み)
+- **Phase 3: IPC & デーモン基盤** --- **完了** (実機検証済み)
+- **Phase 4: キャッシュ / インポート / 正規化** --- **完了** (実機検証済み)
+- **Phase 5: マルチモニター管理** --- **完了** (実機検証済み)
+- **Phase 6: 設定 GUI (libcosmic)** --- **完了** (実機検証済み)
+- **Phase 7: 堅牢化、systemd、性能測定** --- **完了** (実機検証済み)
+
+------------------------------------------------------------------------
+
+## 1. プロジェクト概要
+
+COSMIC Desktop / Wayland 向けの軽量ループ動画壁紙マネージャー。
+
+システムは意図的に以下の構成に分離されています：
+
+``` text
+ユーザー / 自動起動 / CLI / 設定 GUI
+      │
+      ▼
+壁紙デーモン (常駐プロセス, 最小限の CPU/メモリ オーバーヘッド)
+      │
+      ├─ Wayland layer-shell (Layer::Bottom 非破壊オーバーレイ)
+      │
+      ├─ GStreamer 再生コア (デュアルパイプライン・黒画面ゼロ切替, EOS シークループ)
+      │
+      ├─ Unix ドメインソケット IPC ($XDG_RUNTIME_DIR/fluffy.sock)
+      │
+      ├─ キャッシュ・インポートサブシステム (~/.cache/fluffy/)
+      │     ├─ ffprobe 4K 境界検証
+      │     ├─ ffmpeg H.264/yuv420p/30fps 正規化
+      │     └─ SHA-256 原子的キャッシュ & 即時再利用
+      │
+      └─ マルチ出力マネージャー
+            ├── ManagedOutput [DP-1] (LayerSurface + GstVideoPlayer + 世代番号)
+            └── ManagedOutput [DP-2] (LayerSurface + GstVideoPlayer + 世代番号)
+```
+
+設定操作は、IPC 経由で接続する別プロセスの `libcosmic` GUI が担当し、設定完了後は即座に終了します。デーモンは独立して再生を継続します。
+
+------------------------------------------------------------------------
+
+## 2. 現在の状態と検証レベル (Verification Level)
+
+プロジェクト方針に基づき、各項目は 5 段階の検証レベルで管理されています：
+`実装済み (Implemented)` ➔ `コンパイル完了 (Compiled)` ➔ `単体テスト完了 (Unit-tested)` ➔ `結合テスト完了 (Integration-tested)` ➔ `実機検証完了 (Real-hardware-tested)`.
+
+### 2.1 実機検証済み項目 (`Real-hardware-tested`)
+
+**テスト環境:**
+- OS: CachyOS / Arch Linux
+- コンポジター: COSMIC Desktop (`cosmic-comp`, `wayland-1`, `XDG_CURRENT_DESKTOP=COSMIC`)
+- GPU: NVIDIA GeForce RTX 3080 (ドライバー: 615.71.09)
+- 検出ディスプレイ: `DP-1` (2560x1440), `DP-2` (2560x1440)
+- スタック: Rust 1.98.1 (Edition 2024), GStreamer 1.28.7, `waylandsink`, `nvh264dec`, `ffmpeg` n9.0.2, `ffprobe`
+
+#### Phase 1: Wayland / GStreamer PoC [完了]
+- [x] **Wayland ディスプレイハンドルの受け渡し**: GStreamer の sink と Wayland 接続を `GstWaylandDisplayHandleContext` (`gst_wl_display_handle_context_new`) により安全にバインド。
+- [x] **レイヤーサーフェスのマッピング**: 対象出力を覆う `Layer::Bottom` 上の `zwlr_layer_surface_v1` を検証。
+- [x] **サブサーフェスの可視性確保**: 親レイヤーサーフェスに初期ベースバッファ (`Argb8888`) をアタッチし、GStreamer のサブサーフェスをコンポジターへ可視化。
+- [x] **明示的レンダリング矩形設定**: 外部サーフェスバインドに必要な `overlay.set_render_rectangle(0, 0, w, h)` を設定。
+- [x] **ハードウェアデコード**: GStreamer `playbin` 配下での `nvh264dec` ハードウェアアクセラレーション動作を確認。
+
+#### Phase 2: 再生コア (Playback Core) [完了]
+- [x] **コードベースのモジュール化**: `src/error.rs`, `src/wayland/`, `src/playback/` にクリーンに分離。
+- [x] **VideoPlayer トレイト & GstVideoPlayer**:
+  - `play(video)`: 即時再生開始。
+  - `pause()`: フレームが滑らかにフリーズ。
+  - `resume()`: コマ落ちなくスムーズに再開。
+  - `stop()`: パイプラインが `NULL` へクリーンに遷移。
+- [x] **黒画面フラッシュゼロのシームレス切替**: デュアルパイプライン・プリロール構造を実証。動画 A から動画 B への切替時に、黒画面やちらつきが一切発生しないことを確認。
+- [x] **シームレスなループ再生**: EOS バスイベント受信時にパイプラインやサーフェスを再生成せず `seek_simple(ZERO)` を発行（実機にて 17 サイクル以上の連続ループを確認）。
+
+#### Phase 3: IPC & デーモン基盤 [完了]
+- [x] **Unix ドメインソケット IPC**:
+  - `$XDG_RUNTIME_DIR/fluffy.sock` (または `/run/user/1000/fluffy.sock`) にバインド。
+  - 厳格な `0600` ファイル権限（所有者のみアクセス可能）。
+  - デッドソケットの自動検出・クリーンアップと再バインド。
+  - ノンブロッキングディスパッチ: Wayland/GStreamer イベントループをブロックしない統合処理。
+- [x] **プロトコル実装**:
+  - JSON Lines による Request/Response エンベローププロトコル。
+  - リクエスト最大サイズ制限 (64 KB) を強制。
+  - サブコマンド: `status`, `set-video`, `pause`, `resume`, `stop`, `reload`。
+- [x] **完全な CLI スイート (`fluffy`)**:
+  - `fluffy daemon`: 常駐バックグラウンドデーモン。
+  - `fluffy status`: 各モニターの再生状態、動画パス、世代番号、ループ回数を照会。
+  - `fluffy set-video <path>`: IPC 経由での壁紙切替。
+  - `fluffy pause` / `resume` / `stop`: 再生制御。
+- [x] **世代セマンティクス (Generation Semantics)**:
+  - 古い世代番号のリクエスト拒否を検証（高速切替時のレースコンディション防止）。
+- [x] **クリーンなシャットダウンとデスクトップ壁紙の復帰**:
+  - SIGINT / SIGTERM 受信時にプレイヤーを停止、サーフェスを破棄、ソケットを削除し、`cosmic-bg` の静止画壁紙を即座に復旧。
+
+#### Phase 4: キャッシュ / インポート / 正規化 [完了]
+- [x] **`ffprobe` 動画メタデータ検証 (`src/cache/probe.rs`)**:
+  - 解像度、fps、コーデック、再生時間、音声有無を取得。
+  - 4K 解像度制限ポリシー (`width <= 3840 && height <= 2160`) を強制。過大な 5K 入力を即座に拒否。
+- [x] **`ffmpeg` 正規化 (`src/cache/normalize.rs`)**:
+  - 標準プロファイルへのトランスコード: H.264 (`libx264`), `yuv420p`, 30 fps, 音声なし (`-an`), 字幕なし (`-sn`), 偶数寸法補正 (`normalize_even_dimensions`)。
+  - シェル展開を排除した直接引数配列での安全なプロセス実行。
+- [x] **原子的キャッシュ管理 (`src/cache/manager.rs`)**:
+  - キャッシュ保存先: `~/.cache/fluffy/objects/<sha256>.mp4` および `metadata/<sha256>.json`。
+  - 一時ファイルからの一意なアトミック `fs::rename` による不完全書き込み防止。
+  - SHA-256 コンテンツハッシュによる自動重複排除と即時再利用 (10ms 未満)。
+- [x] **デーモン & CLI 統合**:
+  - `fluffy import <path>` による事前キャッシュ登録。
+  - `set-video` 実行時の自動検証・正規化・キャッシュ適用。
+
+#### Phase 5: マルチモニター管理 [完了]
+- [x] **`OutputManager` アーキテクチャ (`src/daemon/output_manager.rs`)**:
+  - 複数物理ディスプレイの同時管理 (`1 出力 = 1 レイヤーサーフェス = 1 GStreamer パイプライン`)。
+  - 各ディスプレイの解像度 (`WlOutput` の論理サイズ / モード) を個別取得。
+- [x] **実機でのデュアル同時再生 (`DP-1` + `DP-2`)**:
+  - `DP-1` (2560x1440) と `DP-2` (2560x1440) で独立した `Layer::Bottom` サーフェスとデコーダパイプラインを並行駆動。
+- [x] **全体制御と画面個別制御の両立**:
+  - 全体: `fluffy set-video test.mp4` で両画面を同時に更新。
+  - 個別: `fluffy set-video test2.mp4 --output DP-2` で DP-2 のみを切り替え、DP-1 はそのまま再生継続。
+  - 個別一時停止/再開/停止の独立性を確認。
+- [x] **マルチサーフェスのクリーンな破棄**:
+  - 終了時に全サーフェスを破棄し、両モニターの静止画壁紙を即座に復帰。
+
+#### Phase 6: 設定 GUI (libcosmic) [完了]
+- [x] **独立クライアント構成 (`fluffy-settings`)**:
+  - `--features gui` による専用バイナリターゲット (`src/bin/fluffy-settings.rs`)。
+  - 常駐デーモン (`fluffy`) を GUI 依存関係から完全に隔離し軽量性を維持。
+- [x] **動的デーモンステータス & ディスプレイ一覧取得**:
+  - 起動時に IPC で稼働中のディスプレイ、動画 URI、世代、ループ数を取得。
+  - 二重デーモン起動防止機構（多重起動時に安全に中断）。
+- [x] **対象ディスプレイ選択 UI**:
+  - 「すべてのディスプレイ (全体)」または検出された各モニター個別の選択。
+- [x] **ネイティブファイルピッカー (`rfd`) & キャッシュ連携**:
+  - Wayland ネイティブのダイアログから動画を選択し、非同期バックグラウンドでキャッシュ検証・正規化。
+- [x] **IPC 連携による即座の反映**:
+  - 全画面適用、画面個別適用、再生/一時停止/停止ボタンの完全動作。
+
+#### Phase 7: 堅牢化、systemd、性能測定 [完了]
+- [x] **systemd `--user` サービスユニット (`data/systemd/fluffy.service`)**:
+  - `graphical-session.target` にバインド (`PartOf`, `After`, `Requisite`)。
+  - 厳格なライフサイクル管理: `Restart=on-failure`, `RestartSec=3`, `TimeoutStopSec=5`。
+  - 必要な Wayland / デスクトップ環境変数 (`WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP` 等) の受け渡し設定。
+- [x] **構造化ロギング & journald 統合 (`tracing` + `tracing-subscriber`)**:
+  - `main`, `daemon`, `playback`, `cache`, `wayland` 各層のログを統一。
+  - `RUST_LOG` による動的レベル制御、journald およびコンソールへのクリーンな出力。
+- [x] **デスクトップエントリ (`data/desktop/com.github.fluffy.Fluffy.desktop`)**:
+  - COSMIC アプリケーションライブラリに正式登録。
+  - ワンクリック導入スクリプト (`scripts/install-desktop-integration.sh`) を完備。
+- [x] **動的ディスプレイ・ホットプラグ (Hotplug & Fault Recovery)**:
+  - SCTK `OutputHandler` のイベント (`new_output`, `update_output`, `output_destroyed`) を検知。
+  - モニター追加時に自動でサーフェスを生成し再生中の壁紙を適用。
+  - モニター切断時に安全に停止・クリーンアップし、デーモンの稼働を維持。
+- [x] **実機性能ベンチマークの実施 (Real-hardware-tested)**:
+  - ベンチマークスイート (`scripts/benchmark.sh`) を実機実行：
+    - **Daemon Idle**: 0.2% CPU, 40.5 MB RSS, 0.0% GPU Decoder.
+    - **1080p30 (DP-1)**: 10.2% CPU, 312.7 MB RSS, 9.9% GPU Decoder.
+    - **1080p30 (DP-1 + DP-2)**: 18.0% CPU, 514.3 MB RSS, 10.5% GPU Decoder.
+    - **1440p30 (DP-1 + DP-2)**: 27.4% CPU, 615.5 MB RSS, 26.6% GPU Decoder.
+    - **4K30 (DP-1 + DP-2)**: 43.9% CPU, 854.1 MB RSS, 50.6% GPU Decoder.
+  - 詳細レポート: [`docs/BENCHMARK_REPORT.ja.md`](BENCHMARK_REPORT.ja.md)
+- [x] **バイナリフットプリントの極小化**:
+  - 常駐デーモンリリースバイナリ: **3.2 MB** (GUI 依存ゼロ)。
+  - 設定 GUI リリースバイナリ: **30 MB**。
+
+### 2.2 将来の拡張課題 (バックログ)
+1. **フラクショナルスケーリング**: COSMIC コンポジター側でのバッファ拡大縮小処理。
+2. **`wp_viewporter` による動的スケーリング**: 将来的な Wayland プロトコル拡張。
+
+------------------------------------------------------------------------
+
+## 3. 確立された主要アーキテクチャ方針
+
+### 3.1 非破壊オーバーレイモデル (`cosmic-bg` との共存)
+- ネイティブの `cosmic-bg` は**決して停止・変更しません**。`Layer::Background` 上で待機（CPU 0%、GPU 0%）しています。
+- Fluffy は `Layer::Bottom` に描画し、`cosmic-bg` を覆い隠しつつ、デスクトップアイコンやドック、ウィンドウの下層に位置します。
+- プロセスのクラッシュ、終了、停止時には Fluffy のサーフェスが瞬時に unmap され、元の壁紙が即座に表示されます。
+
+### 3.2 デュアルパイプライン・プリロール切替
+- 単一パイプラインで URI を切り替えると、`PAUSED -> READY` への遷移時に `gstwaylandsink` が NULL バッファを描画し、黒画面がフラッシュします。
+- Fluffy は同一の親サーフェスに対してセカンダリパイプラインを生成し、プリロール完了まで一時停止待機させた上で `PLAYING` に切り替え、旧パイプラインを破棄します。これにより 100% ちらつきのない切り替えを実現しています。
+
+### 3.3 古いリクエストの拒否 (世代セマンティクス)
+- モニターごとにモノトニック（単調増加）な世代番号を管理。
+- 現在よりも古い世代番号を持つリクエストは IPC で弾かれ、連続切り替え時の競合を完全に防ぎます。
+
+### 3.4 決定論的メディア正規化と原子的キャッシュ
+- `ffprobe` による 4K 境界検証 (`width <= 3840 && height <= 2160`)。
+- H.264 / `yuv420p` / 30fps / 音声なし / 偶数寸法への標準化。
+- SHA-256 コンテンツアドレッシングにより、同一動画の冗長な変換をゼロに抑制。
+
+### 3.5 独立したマルチモニター並行管理
+- 物理モニターごとに個別のレイヤーサーフェスと GStreamer 再生パイプラインを割り当て (`1 出力 = 1 サーフェス = 1 パイプライン`)。
+- 1 つのモニターに対する操作（一時停止、動画切替等）が、他のモニターの再生を阻害したり停止させたりすることはありません。
+
+------------------------------------------------------------------------
+
+## 4. リポジトリ構成
+
+``` text
+Fluffy/
+├── Cargo.toml                  (Features: default (daemon/cli), gui (libcosmic))
+├── Cargo.lock
+├── build.rs
+├── README.md                   (英語ルートドキュメント)
+├── README.ja.md                (日本語ルートドキュメント)
+├── data/
+│   ├── systemd/
+│   │   └── fluffy.service      (systemd --user サービスユニット)
+│   └── desktop/
+│       └── com.github.fluffy.Fluffy.desktop (COSMIC アプリケーションエントリ)
+├── scripts/
+│   ├── install-desktop-integration.sh (自動インストーラー)
+│   └── benchmark.sh            (実機性能ベンチマークスイート)
+├── docs/
+│   ├── PORTAL.md / PORTAL.ja.md
+│   ├── BENCHMARK_REPORT.md / BENCHMARK_REPORT.ja.md
+│   ├── TECHNICAL_DESIGN.md / TECHNICAL_DESIGN.ja.md
+│   └── SESSION_HANDOVER.md / SESSION_HANDOVER.ja.md
+├── src/
+│   ├── lib.rs                  (ライブラリ基盤)
+│   ├── main.rs                 (CLI コマンド & デーモンエントリー)
+│   ├── bin/
+│   │   └── fluffy-settings.rs  (libcosmic 設定 GUI バイナリ)
+│   ├── error.rs                (統合エラー型 FluffyError)
+│   ├── cache/                  (キャッシュ & 正規化サブシステム)
+│   │   ├── mod.rs
+│   │   ├── probe.rs            (ffprobe ラッパー & 4K バリデータ)
+│   │   ├── normalize.rs        (ffmpeg トランスコーダ & 偶数寸法補正)
+│   │   └── manager.rs          (CacheManager, 原子的ファイル書き込み)
+│   ├── daemon/                 (デーモンコントローラー & マルチ出力管理)
+│   │   ├── mod.rs
+│   │   ├── controller.rs       (メインループ, ホットプラグ & IPC ディスパッチ)
+│   │   └── output_manager.rs   (OutputManager & ManagedOutput コレクション)
+│   ├── ipc/                    (Unix ドメインソケット IPC サブシステム)
+│   │   ├── mod.rs
+│   │   ├── protocol.rs         (JSON Lines エンベロープ & 検証)
+│   │   ├── server.rs           (ノンブロッキング IpcServer & デッドソケット掃除)
+│   │   └── client.rs           (タイムアウト保護付き IpcClient)
+│   ├── playback/               (GStreamer 再生コア)
+│   │   ├── mod.rs
+│   │   ├── pipeline.rs         (PipelineHandle & Wayland コンテキストバインド)
+│   │   ├── player.rs           (VideoPlayer トレイト & GstVideoPlayer)
+│   │   └── state.rs            (PlaybackState)
+│   └── wayland/                (Wayland クライアントコア)
+│       ├── mod.rs
+│       ├── connection.rs       (WaylandContext, 出力ホットプラグイベント)
+│       └── layer_surface.rs    (Layer::Bottom 壁紙サーフェス)
+├── test.mp4
+└── test2.mp4
+```
+
+------------------------------------------------------------------------
+
+## 5. テストマトリクス
+
+### Layer Shell
+- [x] `Layer::Bottom` サーフェスの出現 (実機検証済み)
+- [x] 出力ジオメトリ（解像度）の完全被覆 (実機検証済み)
+- [x] サーフェスのクリーンな消去と壁紙復元 (実機検証済み)
+- [x] マルチモニター同時サーフェス (`DP-1` + `DP-2`) (実機検証済み)
+- [x] 出力の切断・動的ホットプラグ処理 (実機検証済み)
+
+### GStreamer 再生コア
+- [x] ハードウェアデコーダ (`nvh264dec`) による H.264 再生 (実機検証済み)
+- [x] パイプライン再生成を伴わない EOS でのシームレスループ (実機検証済み)
+- [x] 一時停止 (Pause) および再開 (Resume) 状態遷移 (実機検証済み)
+- [x] デュアルパイプラインによる黒画面ゼロ切替 (実機検証済み)
+- [x] 停止 (Stop) & サーフェス破棄 (実機検証済み)
+- [x] 独立デュアル出力パイプライン (`DP-1` + `DP-2`) (実機検証済み)
+
+### IPC & デーモン
+- [x] Unix ソケットのバインド & ノンブロッキングポーリング (実機検証済み)
+- [x] 異常終了時のデッドソケット自動検出・削除 (実機検証済み)
+- [x] JSON-RPC シリアライズ / デシリアライズ (単体テスト & 実機検証済み)
+- [x] 不正 JSON および過大リクエストの拒否 (単体テスト済み)
+- [x] `status` コマンド (実機検証済み)
+- [x] `set-video` コマンド (全体 & 画面個別) (実機検証済み)
+- [x] `pause` / `resume` / `stop` / `reload` コマンド (全体 & 画面個別) (実機検証済み)
+- [x] 世代セマンティクスと古いリクエストの拒否 (単体テスト & 実機検証済み)
+- [x] タイムアウト保護付きクライアント通信 (結合テスト & 実機検証済み)
+
+### キャッシュ & インポート
+- [x] `ffprobe` ストリームおよびコーデック検査 (結合テスト & 実機検証済み)
+- [x] 4K 超過解像度の即時拒否 (`5120x1440` 拒否) (単体テスト & 実機検証済み)
+- [x] 奇数解像度の偶数寸法補正 (`normalize_even_dimensions`) (単体テスト済み)
+- [x] `ffmpeg` による H.264/yuv420p/30fps/偶数寸法正規化 (結合テスト & 実機検証済み)
+- [x] 一時ファイル rename による原子的書き込み (結合テスト & 実機検証済み)
+- [x] キャッシュメタデータ追跡と SHA-256 再利用 (結合テスト & 実機検証済み)
+- [x] 変換失敗時の一時ファイルクリーンアップ (結合テスト済み)
+
+### 設定 GUI (libcosmic)
+- [x] フィーチャー分離された `fluffy-settings` バイナリ (`--features gui`) (実機検証済み)
+- [x] 常駐デーモンのゼロオーバーヘッド分離 (バイナリ肥大化なし) (実機検証済み)
+- [x] COSMIC UI テーマ & レイアウト (`libcosmic` Application) (実機検証済み)
+- [x] 非同期デーモンステータス購読・照会 (実機検証済み)
+- [x] ネイティブ Wayland ファイルピッカー連携 (`rfd`) (実機検証済み)
+- [x] ディスプレイ選択 (`すべてのディスプレイ`, `DP-1`, `DP-2`) (実機検証済み)
+- [x] IPC トリガー (`set-video`, `pause`, `resume`, `stop`) (実機検証済み)
+- [x] COSMIC セッション内での手動操作実機テスト (実機検証済み)
+
+### 堅牢化 & デスクトップ統合 (Phase 7)
+- [x] systemd `--user` サービスユニット (`data/systemd/fluffy.service`) (テスト済み)
+- [x] COSMIC アプリケーションライブラリ向けデスクトップエントリ (テスト済み)
+- [x] `tracing` + `tracing-subscriber` 構造化ロギング (実機検証済み)
+- [x] 動的ディスプレイホットプラグ (接続・切断イベント処理) (実機検証済み)
+- [x] 引数順序に依存しない堅牢な CLI パーサー (単体テスト & 実機検証済み)
+- [x] 実機性能ベンチマークスイート (`scripts/benchmark.sh`) (実機検証済み)
+- [x] 自動インストーラー (`scripts/install-desktop-integration.sh`) (テスト済み)
+
+------------------------------------------------------------------------
+
+## 6. プロジェクト総括
+
+1. **現在の状態:**
+   全 7 フェーズの計画内容が **すべて完了** し、NVIDIA RTX 3080 ＋ COSMIC Desktop 実機環境にて動作確認済みです。
+2. **主要成果物:**
+   - 常駐壁紙デーモン: `target/release/fluffy` (3.2 MB)
+   - COSMIC 設定 GUI: `target/release/fluffy-settings` (30 MB)
+   - systemd サービスユニット: `data/systemd/fluffy.service`
+   - デスクトップエントリ: `data/desktop/com.github.fluffy.Fluffy.desktop`
+   - インストールスクリプト: `scripts/install-desktop-integration.sh`
+   - ベンチマークスイート: `scripts/benchmark.sh` & `docs/BENCHMARK_REPORT.ja.md`
+3. **遵守された設計原則:**
+   - GUI はステートを持たない一時的な IPC クライアントであり、レイヤーサーフェスや GStreamer パイプラインを直接所有しません。
+   - `cosmic-bg` と安全に共存する非破壊オーバーレイ構造 (`Layer::Bottom`) を徹底して維持しています。

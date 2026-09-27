@@ -18,7 +18,7 @@ use crate::{
         IpcServer,
     },
     playback::VideoPlayer,
-    wayland::WaylandContext,
+    wayland::{WaylandContext, WaylandOutputEvent},
 };
 use super::output_manager::OutputManager;
 
@@ -28,6 +28,7 @@ pub struct WallpaperDaemon {
     pub cache: CacheManager,
     pub ipc_server: IpcServer,
     pub exit_flag: Arc<AtomicBool>,
+    pub requested_output: Option<String>,
 }
 
 impl WallpaperDaemon {
@@ -46,9 +47,9 @@ impl WallpaperDaemon {
             return Err(FluffyError::Wayland("No Wayland outputs detected".to_string()));
         }
 
-        println!("[Daemon] Discovered Wayland outputs:");
+        tracing::info!("[Daemon] Discovered Wayland outputs:");
         for (name, _) in &outputs_info {
-            println!("  - {name}");
+            tracing::info!("  - {name}");
         }
 
         let mut output_manager = OutputManager::new();
@@ -69,7 +70,7 @@ impl WallpaperDaemon {
             output_manager.init_output(&mut wayland_ctx, name, wl_out)?;
         }
 
-        println!(
+        tracing::info!(
             "[Daemon] Initialized {} active output(s) concurrently",
             output_manager.len()
         );
@@ -82,7 +83,55 @@ impl WallpaperDaemon {
             cache,
             ipc_server,
             exit_flag,
+            requested_output: requested_output.map(|s| s.to_string()),
         })
+    }
+
+    /// Handles dynamic Wayland output addition, update, and removal (hotplug).
+    pub fn handle_output_events(&mut self) -> Result<()> {
+        let events = self.wayland_ctx.take_output_events();
+        for event in events {
+            match event {
+                WaylandOutputEvent::AddedOrUpdated(wl_out) => {
+                    if let Some(name) = self.wayland_ctx.output_name(&wl_out) {
+                        // If daemon was started for a specific output, ignore other outputs
+                        if let Some(ref req) = self.requested_output {
+                            if req != &name {
+                                continue;
+                            }
+                        }
+
+                        if !self.outputs.contains(&name) {
+                            tracing::info!("[Daemon] Discovered newly attached Wayland output: {name}");
+                            match self.outputs.init_output(&mut self.wayland_ctx, name.clone(), wl_out) {
+                                Ok(()) => {
+                                    tracing::info!("[Daemon] Successfully initialized hotplugged output '{name}'");
+                                    // If another output is already playing a wallpaper, match it
+                                    if let Some(active_vid) = self.outputs.default_active_video() {
+                                        tracing::info!(
+                                            "[Daemon] Automatically applying active wallpaper to hotplugged output '{name}': {:?}",
+                                            active_vid
+                                        );
+                                        let _ = self.outputs.set_video(Some(&name), &active_vid, None);
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "[Daemon] Failed to initialize newly attached output '{name}': {e}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                WaylandOutputEvent::Destroyed(wl_out) => {
+                    if let Some(removed_name) = self.outputs.remove_output_by_wl(&mut self.wayland_ctx, &wl_out) {
+                        tracing::info!("[Daemon] Output '{removed_name}' disconnected and cleaned up.");
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Handles a single IPC request envelope and produces an IPC response.
@@ -197,6 +246,9 @@ impl WallpaperDaemon {
         // 1. Dispatch pending Wayland compositor events
         self.wayland_ctx.dispatch_pending()?;
 
+        // 1b. Check for dynamic output hotplug events (attach / detach)
+        self.handle_output_events()?;
+
         // 2. Poll GStreamer bus events for all managed outputs
         self.outputs.poll_events()?;
 
@@ -212,7 +264,7 @@ impl WallpaperDaemon {
 
     /// Runs the daemon main loop until a shutdown signal is received.
     pub fn run(&mut self) -> Result<()> {
-        println!("[Daemon] Daemon main loop started. Ready for IPC commands.");
+        tracing::info!("[Daemon] Daemon main loop started. Ready for IPC commands.");
 
         while !self.exit_flag.load(Ordering::SeqCst) {
             self.step()?;
@@ -220,7 +272,7 @@ impl WallpaperDaemon {
             thread::sleep(Duration::from_millis(5));
         }
 
-        println!("[Daemon] Shutdown signal detected. Performing clean teardown...");
+        tracing::info!("[Daemon] Shutdown signal detected. Performing clean teardown...");
         self.teardown();
         Ok(())
     }

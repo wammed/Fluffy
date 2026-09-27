@@ -54,28 +54,68 @@ OPTIONS for IPC client commands:
     );
 }
 
+fn parse_positional_path(args: &[String]) -> Option<String> {
+    let mut i = 0;
+    while i < args.len() {
+        if (args[i] == "--socket" || args[i] == "--output" || args[i] == "--generation" || args[i] == "--video") && i + 1 < args.len() {
+            i += 2;
+            continue;
+        }
+        if args[i].starts_with("--") {
+            i += 1;
+            continue;
+        }
+        if args[i] == "set-video" || args[i] == "set_video" || args[i] == "import" {
+            i += 1;
+            continue;
+        }
+        return Some(args[i].clone());
+    }
+    None
+}
+
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
-    let command = args.get(1).map(|s| s.as_str()).unwrap_or("daemon");
+    let raw_args = &args[1..];
+
+    // Find the command token, skipping any flag parameters
+    let mut command = "daemon";
+    let mut i = 0;
+    while i < raw_args.len() {
+        let arg = &raw_args[i];
+        if (arg == "--socket" || arg == "--output" || arg == "--video" || arg == "--generation") && i + 1 < raw_args.len() {
+            i += 2;
+            continue;
+        }
+        if arg.starts_with("--") {
+            if arg == "--help" || arg == "-h" {
+                command = "help";
+                break;
+            }
+            i += 1;
+            continue;
+        }
+        command = arg.as_str();
+        break;
+    }
 
     match command {
         "help" | "--help" | "-h" => {
             print_help();
             Ok(())
         }
-        "status" => cmd_status(&args[2..]),
-        "set-video" | "set_video" => cmd_set_video(&args[2..]),
-        "import" => cmd_import(&args[2..]),
-        "pause" => cmd_pause(&args[2..]),
-        "resume" => cmd_resume(&args[2..]),
-        "stop" => cmd_stop(&args[2..]),
-        "reload" => cmd_reload(&args[2..]),
-        "daemon" | "run" => cmd_daemon(&args[2..]),
-        cmd if cmd.starts_with("--") => cmd_daemon(&args[1..]),
+        "status" => cmd_status(raw_args),
+        "set-video" | "set_video" => cmd_set_video(raw_args),
+        "import" => cmd_import(raw_args),
+        "pause" => cmd_pause(raw_args),
+        "resume" => cmd_resume(raw_args),
+        "stop" => cmd_stop(raw_args),
+        "reload" => cmd_reload(raw_args),
+        "daemon" | "run" => cmd_daemon(raw_args),
         cmd => {
             // Check if it's a file path meant for daemon initial video, or invalid command
             if Path::new(cmd).exists() {
-                cmd_daemon(&args[1..])
+                cmd_daemon(raw_args)
             } else {
                 eprintln!("Unknown command: '{cmd}'. Run 'fluffy help' for usage.");
                 std::process::exit(1);
@@ -111,8 +151,21 @@ fn parse_generation_arg(args: &[String]) -> Option<u64> {
     None
 }
 
+fn init_logging() {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("fluffy=info,gstreamer=warn"));
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+}
+
 fn cmd_daemon(args: &[String]) -> Result<()> {
-    println!("=== Fluffy Video Wallpaper Manager Daemon (Phase 3 IPC) ===");
+    init_logging();
+    tracing::info!("=== Fluffy Video Wallpaper Manager Daemon (Phase 7 Hardened) ===");
 
     let socket_path = parse_socket_arg(args);
     let requested_output = parse_output_arg(args);
@@ -140,7 +193,7 @@ fn cmd_daemon(args: &[String]) -> Result<()> {
     {
         let exit_flag = exit_flag.clone();
         ctrlc::set_handler(move || {
-            println!("\n[Main] Shutdown signal (Ctrl+C) received...");
+            tracing::info!("[Main] Shutdown signal (Ctrl+C / SIGTERM) received...");
             exit_flag.store(true, Ordering::SeqCst);
         })
         .ok();
@@ -154,12 +207,12 @@ fn cmd_daemon(args: &[String]) -> Result<()> {
 
     // If an initial video was specified, start playing it
     if let Some(video) = initial_video {
-        println!("[Main] Starting initial playback: {:?}", video);
+        tracing::info!("[Main] Starting initial playback: {:?}", video);
         let req = crate::ipc::RequestEnvelope::new(0, crate::ipc::CommandType::SetVideo)
             .with_path(video);
         let resp = daemon.handle_request(&req);
         if !resp.success {
-            eprintln!("[Main] Initial video playback failed: {:?}", resp.error);
+            tracing::error!("[Main] Initial video playback failed: {:?}", resp.error);
         }
     }
 
@@ -190,9 +243,7 @@ fn cmd_set_video(args: &[String]) -> Result<()> {
     let output = parse_output_arg(args);
     let generation = parse_generation_arg(args);
 
-    let path_str = args
-        .iter()
-        .find(|a| !a.starts_with("--"))
+    let path_str = parse_positional_path(args)
         .ok_or_else(|| FluffyError::Ipc("Missing video path for 'set-video'".to_string()))?;
 
     let path = PathBuf::from(path_str);
@@ -244,9 +295,7 @@ fn cmd_stop(args: &[String]) -> Result<()> {
 }
 
 fn cmd_import(args: &[String]) -> Result<()> {
-    let path_str = args
-        .iter()
-        .find(|a| !a.starts_with("--"))
+    let path_str = parse_positional_path(args)
         .ok_or_else(|| FluffyError::Ipc("Missing video path for 'import'".to_string()))?;
 
     let path = PathBuf::from(path_str);

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Fluffy Wallpaper Settings
+Comment=Live Video Wallpaper Settings for COSMIC Desktop
+Exec=fluffy-settings
+Icon=preferences-desktop-wallpaper
+Terminal=false
+Type=Application
+Categories=Settings;DesktopSettings;HardwareSettings;
+Keywords=wallpaper;video;background;cosmic;loop;
+StartupNotify=true
+StartupWMClass=com.github.wammed.fluffy.settings
