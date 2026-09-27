@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod daemon;
 pub mod error;
 pub mod ipc;
@@ -14,6 +15,7 @@ use std::{
 };
 
 use crate::{
+    cache::CacheManager,
     daemon::WallpaperDaemon,
     error::{FluffyError, Result},
     ipc::{default_socket_path, IpcClient},
@@ -21,7 +23,7 @@ use crate::{
 
 fn print_help() {
     println!(
-        r#"Fluffy Video Wallpaper Manager - Phase 3 (IPC & Daemon)
+        r#"Fluffy Video Wallpaper Manager - Phase 4 (Cache & Import)
 
 USAGE:
     fluffy [COMMAND] [OPTIONS]
@@ -29,7 +31,8 @@ USAGE:
 COMMANDS:
     daemon, run          Run the wallpaper daemon (default if no command given)
     status               Query daemon and output status via IPC
-    set-video <PATH>     Change video wallpaper via IPC
+    set-video <PATH>     Change video wallpaper via IPC (validates & normalizes to cache)
+    import <PATH>        Validate and import video into cache without playing
     pause                Pause video playback
     resume               Resume video playback
     stop                 Stop video playback
@@ -62,6 +65,7 @@ fn main() -> Result<()> {
         }
         "status" => cmd_status(&args[2..]),
         "set-video" | "set_video" => cmd_set_video(&args[2..]),
+        "import" => cmd_import(&args[2..]),
         "pause" => cmd_pause(&args[2..]),
         "resume" => cmd_resume(&args[2..]),
         "stop" => cmd_stop(&args[2..]),
@@ -236,6 +240,34 @@ fn cmd_stop(args: &[String]) -> Result<()> {
     let client = IpcClient::new(&socket);
     client.stop(output.as_deref())?;
     println!("Playback stopped.");
+    Ok(())
+}
+
+fn cmd_import(args: &[String]) -> Result<()> {
+    let path_str = args
+        .iter()
+        .find(|a| !a.starts_with("--"))
+        .ok_or_else(|| FluffyError::Ipc("Missing video path for 'import'".to_string()))?;
+
+    let path = PathBuf::from(path_str);
+    let abs_path = if path.is_absolute() {
+        path
+    } else {
+        env::current_dir()?.join(path)
+    };
+
+    if !abs_path.exists() {
+        return Err(FluffyError::Cache(format!(
+            "Video file does not exist: {:?}",
+            abs_path
+        )));
+    }
+
+    println!("[Import] Validating and importing: {:?}", abs_path);
+    let cache = CacheManager::new(CacheManager::default_cache_dir())?;
+    let cached_path = cache.import_video(&abs_path)?;
+    println!("[Import] Successfully imported to: {:?}", cached_path);
+
     Ok(())
 }
 

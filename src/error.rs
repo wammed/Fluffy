@@ -35,6 +35,15 @@ pub enum FluffyError {
     #[error("IPC JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("Probe error: {0}")]
+    Probe(String),
+
+    #[error("Conversion error: {0}")]
+    Conversion(String),
+
+    #[error("Cache error: {0}")]
+    Cache(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

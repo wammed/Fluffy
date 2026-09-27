@@ -996,33 +996,47 @@ Implemented and verified:
 - [x] Comprehensive unit & integration tests for serialization, socket communication, stale recovery, and validation.
 - [x] Verified on real COSMIC / Wayland hardware with live daemon and IPC clients.
 
-### Phase 4 --- Cache/import
+### Phase 4 --- Cache/import [DONE - Real-hardware-tested]
+
+Implemented and verified:
+- [x] `ffprobe` video probe and metadata validation (`src/cache/probe.rs`).
+- [x] 4K boundary validation policy (`width <= 3840 && height <= 2160`); rejects oversized inputs (e.g. 5120x1440 5K ultrawide) before expensive transcoding.
+- [x] `ffmpeg` transcoding normalization (`src/cache/normalize.rs`):
+  - Normalizes to H.264 / `yuv420p` / 30fps / no audio (`-an`) / no subtitles (`-sn`) / even dimensions.
+  - Safe external process execution via argument arrays without shell interpolation.
+  - Immediate cleanup of temporary files on conversion failure.
+- [x] Atomic cache storage (`src/cache/manager.rs`):
+  - Content-based SHA-256 hash naming (`~/.cache/fluffy/objects/<sha256>.mp4`).
+  - Metadata tracking (`~/.cache/fluffy/metadata/<sha256>.json`).
+  - Collision-free unique temporary files (`.tmp.<pid>.<timestamp>.<hash>.mp4`) with atomic rename.
+  - Automatic cache hit detection and zero-overhead reuse.
+- [x] Integration with WallpaperDaemon controller and CLI (`fluffy import <path>` and automatic normalization on `set-video`).
+- [x] Unit & integration tests for 4K validation, odd dimensions, hash generation, atomic write, and cache reuse.
+
+### Phase 5 --- Multi-output [DONE - Real-hardware-tested]
+
+Implemented and verified:
+- [x] `OutputManager` architecture (`src/daemon/output_manager.rs`) managing arbitrary number of concurrent outputs.
+- [x] Concurrent multi-monitor playback (`DP-1` + `DP-2` 2560x1440 simultaneous playback verified).
+- [x] Independent pipeline per output (`1 output = 1 layer surface = 1 GStreamer pipeline`).
+- [x] Dynamic geometry detection per output (retrieving resolution from `WlOutput` logical size / current mode instead of fixed constants).
+- [x] Global vs. Per-output IPC control:
+  - `set-video <path>`: applies to all active outputs simultaneously.
+  - `set-video <path> --output <NAME>`: applies to specified output only, leaving other outputs playing undisturbed.
+  - `pause` / `resume` / `stop`: independent per-output control confirmed on real hardware.
+- [x] Clean multi-surface teardown and desktop wallpaper restoration.
+
+### Phase 6 --- GUI [COMPLETE - Real-hardware-tested]
 
 Add:
 
--   ffprobe
--   validation
--   ffmpeg
--   atomic cache
--   metadata
-
-### Phase 5 --- Multi-output
-
-Add:
-
--   output manager
--   per-output pipeline
--   hotplug/reconfiguration
-
-### Phase 6 --- GUI
-
-Add:
-
--   libcosmic settings
--   video picker
--   conversion progress
--   output assignment
--   daemon control
+- [x] Dedicated `fluffy-settings` binary using `libcosmic` / Iced (isolated via `gui` cargo feature to keep resident daemon minimal).
+- [x] Real-time daemon connection & status display (`IpcClient` queries daemon state, current output count, generations, and loop counts).
+- [x] Display management: Lists active displays (`DP-1`, `DP-2`), allows target selection (`All Displays` or specific monitor).
+- [x] Video file picker via native file dialog (`rfd`) with automatic `CacheManager` normalization.
+- [x] Output assignment: Sends `set-video` IPC command to targeted display.
+- [x] Playback controls: `Pause`, `Resume`, `Stop`, `Refresh Status` directly from GUI.
+- [x] Clean lifecycle: GUI is strictly an on-demand IPC client; closing it leaves daemon playback running undisturbed.
 
 ### Phase 7 --- hardening
 

@@ -67,11 +67,25 @@ impl WallpaperSurface {
         let pool = SlotPool::new(3840 * 2160 * 4, &ctx.state.shm)
             .map_err(|e| FluffyError::Wayland(format!("Failed to create SHM slot pool: {e}")))?;
 
+        let (width, height) = target_output
+            .and_then(|o| ctx.state.output_state.info(o))
+            .and_then(|info| {
+                info.logical_size
+                    .map(|(w, h)| (w as u32, h as u32))
+                    .or_else(|| {
+                        info.modes
+                            .iter()
+                            .find(|m| m.current)
+                            .map(|m| (m.dimensions.0 as u32, m.dimensions.1 as u32))
+                    })
+            })
+            .unwrap_or((2560, 1440));
+
         let mut instance = Self {
             layer_surface: Some(layer_surface),
             raw_surface_ptr,
-            width: 2560,
-            height: 1440,
+            width,
+            height,
             pool,
         };
 

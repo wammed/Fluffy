@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -9,9 +8,8 @@ use std::{
     time::Duration,
 };
 
-use smithay_client_toolkit::shell::wlr_layer::Layer;
-
 use crate::{
+    cache::CacheManager,
     error::{FluffyError, Result},
     ipc::{
         protocol::{
@@ -19,32 +17,28 @@ use crate::{
         },
         IpcServer,
     },
-    playback::{GstVideoPlayer, VideoPlayer},
-    wayland::{WallpaperSurface, WaylandContext},
+    playback::VideoPlayer,
+    wayland::WaylandContext,
 };
-
-pub struct ManagedOutput {
-    pub name: String,
-    pub surface: WallpaperSurface,
-    pub player: GstVideoPlayer,
-    pub generation: u64,
-}
+use super::output_manager::OutputManager;
 
 pub struct WallpaperDaemon {
     pub wayland_ctx: WaylandContext,
-    pub outputs: HashMap<String, ManagedOutput>,
+    pub outputs: OutputManager,
+    pub cache: CacheManager,
     pub ipc_server: IpcServer,
     pub exit_flag: Arc<AtomicBool>,
 }
 
 impl WallpaperDaemon {
-    /// Initializes the wallpaper daemon on the specified output (or all outputs),
+    /// Initializes the wallpaper daemon on all detected outputs (or a specifically requested output),
     /// binding the IPC server to the provided socket path.
     pub fn new<P: AsRef<Path>>(
         socket_path: P,
         requested_output: Option<&str>,
         exit_flag: Arc<AtomicBool>,
     ) -> Result<Self> {
+        let cache = CacheManager::new(CacheManager::default_cache_dir())?;
         let mut wayland_ctx = WaylandContext::init()?;
 
         let outputs_info = wayland_ctx.outputs();
@@ -57,9 +51,10 @@ impl WallpaperDaemon {
             println!("  - {name}");
         }
 
-        let mut managed_outputs = HashMap::new();
+        let mut output_manager = OutputManager::new();
 
-        // If a specific output is requested, use it; otherwise initialize the first output
+        // If a specific output is requested, bind only to it;
+        // otherwise, bind to ALL discovered outputs concurrently.
         let target_outputs: Vec<(String, _)> = if let Some(req_name) = requested_output {
             let found = outputs_info
                 .into_iter()
@@ -67,37 +62,24 @@ impl WallpaperDaemon {
                 .ok_or_else(|| FluffyError::OutputNotFound(req_name.to_string()))?;
             vec![found]
         } else {
-            // Select default primary output
-            vec![outputs_info.into_iter().next().unwrap()]
+            outputs_info
         };
 
         for (name, wl_out) in target_outputs {
-            println!("[Daemon] Initializing wallpaper surface for output '{name}'...");
-            let surface = WallpaperSurface::new(&mut wayland_ctx, Some(&wl_out), Layer::Bottom)?;
-
-            let player = GstVideoPlayer::new(
-                wayland_ctx.raw_display_ptr(),
-                surface.raw_surface_ptr,
-                surface.width,
-                surface.height,
-            )?;
-
-            managed_outputs.insert(
-                name.clone(),
-                ManagedOutput {
-                    name,
-                    surface,
-                    player,
-                    generation: 0,
-                },
-            );
+            output_manager.init_output(&mut wayland_ctx, name, wl_out)?;
         }
+
+        println!(
+            "[Daemon] Initialized {} active output(s) concurrently",
+            output_manager.len()
+        );
 
         let ipc_server = IpcServer::bind(socket_path)?;
 
         Ok(Self {
             wayland_ctx,
-            outputs: managed_outputs,
+            outputs: output_manager,
+            cache,
             ipc_server,
             exit_flag,
         })
@@ -108,7 +90,7 @@ impl WallpaperDaemon {
         match req.command {
             CommandType::Status => {
                 let mut output_statuses = Vec::new();
-                for (name, out) in &self.outputs {
+                for (name, out) in self.outputs.iter() {
                     output_statuses.push(OutputStatus {
                         name: name.clone(),
                         state: out.player.state().to_string(),
@@ -151,7 +133,7 @@ impl WallpaperDaemon {
 
                 // If specific output was requested, verify it exists
                 if let Some(ref target_name) = req.output {
-                    if !self.outputs.contains_key(target_name) {
+                    if !self.outputs.contains(target_name) {
                         return ResponseEnvelope::failure(
                             req.request_id,
                             format!("Output '{}' not managed by daemon", target_name),
@@ -159,112 +141,51 @@ impl WallpaperDaemon {
                     }
                 }
 
-                // Apply to targeted output or all outputs
-                for (name, out) in self.outputs.iter_mut() {
-                    if let Some(ref target_name) = req.output {
-                        if name != target_name {
-                            continue;
-                        }
-                    }
-
-                    // Generation validation (Section 9.3)
-                    if let Some(req_gen) = req.generation {
-                        if req_gen < out.generation {
-                            return ResponseEnvelope::failure(
-                                req.request_id,
-                                format!(
-                                    "Stale request generation: {} < current {}",
-                                    req_gen, out.generation
-                                ),
-                            );
-                        }
-                        out.generation = req_gen;
-                    } else {
-                        out.generation += 1;
-                    }
-
-                    println!(
-                        "[Daemon] Setting video for output '{}' (gen: {}): {:?}",
-                        name, out.generation, path
-                    );
-
-                    if let Err(e) = out.player.play(path) {
+                // Import, validate (4K policy) and normalize into cache
+                let cached_path = match self.cache.import_video(path) {
+                    Ok(p) => p,
+                    Err(e) => {
                         return ResponseEnvelope::failure(
                             req.request_id,
-                            format!("Failed to play video on '{}': {e}", name),
+                            format!("Video import/normalization failed: {e}"),
                         );
                     }
+                };
+
+                if let Err(e) =
+                    self.outputs
+                        .set_video(req.output.as_deref(), &cached_path, req.generation)
+                {
+                    return ResponseEnvelope::failure(req.request_id, e.to_string());
                 }
 
                 ResponseEnvelope::success(req.request_id, None)
             }
 
             CommandType::Pause => {
-                for (name, out) in self.outputs.iter_mut() {
-                    if let Some(ref target_name) = req.output {
-                        if name != target_name {
-                            continue;
-                        }
-                    }
-                    if let Err(e) = out.player.pause() {
-                        return ResponseEnvelope::failure(
-                            req.request_id,
-                            format!("Failed to pause output '{}': {e}", name),
-                        );
-                    }
+                if let Err(e) = self.outputs.pause(req.output.as_deref()) {
+                    return ResponseEnvelope::failure(req.request_id, e.to_string());
                 }
                 ResponseEnvelope::success(req.request_id, None)
             }
 
             CommandType::Resume => {
-                for (name, out) in self.outputs.iter_mut() {
-                    if let Some(ref target_name) = req.output {
-                        if name != target_name {
-                            continue;
-                        }
-                    }
-                    if let Err(e) = out.player.resume() {
-                        return ResponseEnvelope::failure(
-                            req.request_id,
-                            format!("Failed to resume output '{}': {e}", name),
-                        );
-                    }
+                if let Err(e) = self.outputs.resume(req.output.as_deref()) {
+                    return ResponseEnvelope::failure(req.request_id, e.to_string());
                 }
                 ResponseEnvelope::success(req.request_id, None)
             }
 
             CommandType::Stop => {
-                for (name, out) in self.outputs.iter_mut() {
-                    if let Some(ref target_name) = req.output {
-                        if name != target_name {
-                            continue;
-                        }
-                    }
-                    if let Err(e) = out.player.stop() {
-                        return ResponseEnvelope::failure(
-                            req.request_id,
-                            format!("Failed to stop output '{}': {e}", name),
-                        );
-                    }
+                if let Err(e) = self.outputs.stop(req.output.as_deref()) {
+                    return ResponseEnvelope::failure(req.request_id, e.to_string());
                 }
                 ResponseEnvelope::success(req.request_id, None)
             }
 
             CommandType::Reload => {
-                for (name, out) in self.outputs.iter_mut() {
-                    if let Some(ref target_name) = req.output {
-                        if name != target_name {
-                            continue;
-                        }
-                    }
-                    if let Some(curr) = out.player.current_video().map(|p| p.to_path_buf()) {
-                        if let Err(e) = out.player.play(&curr) {
-                            return ResponseEnvelope::failure(
-                                req.request_id,
-                                format!("Failed to reload output '{}': {e}", name),
-                            );
-                        }
-                    }
+                if let Err(e) = self.outputs.reload(req.output.as_deref()) {
+                    return ResponseEnvelope::failure(req.request_id, e.to_string());
                 }
                 ResponseEnvelope::success(req.request_id, None)
             }
@@ -276,12 +197,8 @@ impl WallpaperDaemon {
         // 1. Dispatch pending Wayland compositor events
         self.wayland_ctx.dispatch_pending()?;
 
-        // 2. Poll GStreamer bus events for all outputs
-        for (name, out) in self.outputs.iter_mut() {
-            if !out.player.poll_events()? {
-                eprintln!("[Daemon] Output '{}' playback encountered fatal error", name);
-            }
-        }
+        // 2. Poll GStreamer bus events for all managed outputs
+        self.outputs.poll_events()?;
 
         // 3. Poll and process IPC requests
         let pending_requests = self.ipc_server.poll_requests()?;
@@ -310,12 +227,6 @@ impl WallpaperDaemon {
 
     /// Performs clean teardown of all players and layer surfaces, restoring desktop wallpaper.
     pub fn teardown(&mut self) {
-        for (name, mut out) in self.outputs.drain() {
-            println!("[Daemon] Stopping player on output '{}'...", name);
-            let _ = out.player.stop();
-            println!("[Daemon] Destroying surface on output '{}'...", name);
-            out.surface.destroy(&mut self.wayland_ctx);
-        }
-        println!("[Daemon] Teardown complete. Desktop wallpaper cleanly restored.");
+        self.outputs.teardown_all(&mut self.wayland_ctx);
     }
 }
