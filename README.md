@@ -3,6 +3,8 @@
 # 🎬 Fluffy
 ### Lightweight, Non-Destructive Video Wallpaper Manager for COSMIC Desktop / Wayland
 
+![Banner](./images/fluffy-banner.svg)
+
 [![Built with libcosmic](https://img.shields.io/badge/libcosmic-Pop!_OS_COSMIC-24C8D8?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/pop-os/libcosmic)
 [![Rust](https://img.shields.io/badge/Rust-1.80+-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Wayland](https://img.shields.io/badge/Wayland-Native-5277C3?style=for-the-badge&logo=wayland&logoColor=white)](https://wayland.freedesktop.org/)
