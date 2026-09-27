@@ -148,6 +148,25 @@ fn parse_frame_rate(fps_str: &str) -> f64 {
     fps_str.parse().unwrap_or(30.0)
 }
 
+impl VideoStreamInfo {
+    /// Checks whether the video is already fully compliant with the playback profile:
+    /// - Video Codec: H.264 ("h264" or "avc1")
+    /// - Pixel Format: "yuv420p"
+    /// - Even Dimensions: width and height are divisible by 2
+    /// - Dimensions within 4K boundary: width <= 3840 && height <= 2160
+    /// - Frame Rate: <= 30.5 fps (supports 23.976, 24, 25, 29.97, 30 fps)
+    pub fn is_compatible_profile(&self) -> bool {
+        let codec_ok = self.codec == "h264" || self.codec == "avc1";
+        let pix_fmt_ok = self.pix_fmt.as_deref() == Some("yuv420p");
+        let dims_even = (self.width % 2 == 0) && (self.height % 2 == 0);
+        let dims_ok = self.width <= MAX_WIDTH && self.height <= MAX_HEIGHT && self.width > 0 && self.height > 0;
+        let fps_ok = self.fps <= 30.5;
+
+        codec_ok && pix_fmt_ok && dims_even && dims_ok && fps_ok
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,4 +197,39 @@ mod tests {
         assert!((parse_frame_rate("30000/1001") - 29.97).abs() < 1e-2);
         assert!((parse_frame_rate("60/1") - 60.0).abs() < 1e-4);
     }
+
+    #[test]
+    fn test_is_compatible_profile() {
+        let valid = VideoStreamInfo {
+            width: 1920,
+            height: 1080,
+            codec: "h264".to_string(),
+            pix_fmt: Some("yuv420p".to_string()),
+            fps: 30.0,
+            duration_secs: Some(10.0),
+            has_audio: false,
+        };
+        assert!(valid.is_compatible_profile());
+
+        // Odd dimension -> incompatible
+        let mut odd = valid.clone();
+        odd.width = 1921;
+        assert!(!odd.is_compatible_profile());
+
+        // 60 fps -> incompatible
+        let mut high_fps = valid.clone();
+        high_fps.fps = 60.0;
+        assert!(!high_fps.is_compatible_profile());
+
+        // HEVC codec -> incompatible
+        let mut hevc = valid.clone();
+        hevc.codec = "hevc".to_string();
+        assert!(!hevc.is_compatible_profile());
+
+        // Pixel format yuv422p -> incompatible
+        let mut yuv422 = valid.clone();
+        yuv422.pix_fmt = Some("yuv422p".to_string());
+        assert!(!yuv422.is_compatible_profile());
+    }
 }
+

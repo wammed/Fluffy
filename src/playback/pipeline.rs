@@ -58,12 +58,25 @@ impl PipelineHandle {
         }
         let _ = overlay.set_render_rectangle(0, 0, width as i32, height as i32);
 
-        // 3. Create playbin with pre-configured sink
-        let playbin = gstreamer::ElementFactory::make("playbin")
+        // 3. Create playbin with pre-configured sink and silent audio sink
+        let audio_sink = gstreamer::ElementFactory::make("fakesink")
+            .name("fluffy-audio-fakesink")
+            .build()
+            .ok();
+
+        let mut playbin_builder = gstreamer::ElementFactory::make("playbin")
             .property("uri", uri)
             .property("video-sink", &sink)
+            .property("volume", 0.0f64);
+
+        if let Some(ref asink) = audio_sink {
+            playbin_builder = playbin_builder.property("audio-sink", asink);
+        }
+
+        let playbin = playbin_builder
             .build()
             .map_err(|e| FluffyError::Playback(format!("Failed to create playbin: {e}")))?;
+
 
         let pipeline = playbin
             .dynamic_cast::<gstreamer::Pipeline>()

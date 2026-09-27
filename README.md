@@ -165,7 +165,41 @@ fluffy status
 
 ---
 
+## 🎬 Video Specifications & Persistent Storage
+
+### 1. Compliant Video Profile (Instant Playback & Zero CPU Transcoding)
+Video files satisfying the standard profile completely **bypass transcoding** and are instantly registered to persistent storage and played with near-zero latency and zero fan noise:
+
+| Property | Compliant Standard | Description |
+| :--- | :--- | :--- |
+| **Container** | MP4 (`.mp4`) | Standard MP4 container |
+| **Video Codec** | H.264 / AVC (`h264`, `avc1`) | Maximum decoding efficiency across all GPUs and CPUs |
+| **Pixel Format** | `yuv420p` | Widely compatible 8-bit YUV |
+| **Resolution** | Even width & height, up to 4K (3840×2160) | Odd pixel dimensions cause Wayland / GStreamer rendering bugs |
+| **Frame Rate** | Up to 30 fps (23.976, 24, 25, 29.97, 30 fps) | Guaranteed low CPU/GPU power consumption and minimal heat |
+| **Audio** | Any (automatically muted with silent sink) | Wallpaper playback is strictly non-intrusive |
+
+### 2. Automatic Normalization for Non-Compliant Videos
+Non-compliant videos (e.g. HEVC/H.265, AV1, VP9, 60fps+, odd dimensions, MKV, WebM) are fully supported via automatic background normalization:
+- **First-run Background Transcode**: On initial selection, a background worker thread normalizes the video to the standard profile (H.264/yuv420p/30fps).
+  - **High CPU Notice**: Initial transcoding requires CPU rendering power, temporarily increasing CPU usage and fan speed.
+  - **Zero Black Screen Guarantee**: Transcoding is completely non-blocking; the daemon's event loop and ongoing wallpaper playback keep running smoothly, meaning **no black screen occurs while waiting**.
+- **Instant Playback Thereafter**: Once normalized, the video is saved in persistent storage; subsequent playback skips transcoding and starts instantly.
+
+### 3. Persistent Storage Directory (`~/.local/share/fluffy/storage`)
+Normalized and compliant videos are stored in dedicated persistent storage rather than an ephemeral cache that could be wiped by cleanup tools:
+- **Videos Directory**: `$XDG_DATA_HOME/fluffy/storage/videos/` (default: `~/.local/share/fluffy/storage/videos/<hash>.mp4`)
+- **Metadata Directory**: `$XDG_DATA_HOME/fluffy/storage/metadata/` (default: `~/.local/share/fluffy/storage/metadata/<hash>.json`)
+- **Deduplication**: Files are indexed by SHA-256 content hashes, avoiding duplicate storage.
+
+### 4. Visual Conversion Indicator
+- **Settings GUI (`fluffy-settings`)**: Displays an animated spinner (`⚙️ ↑`) alongside real-time status while conversion is active.
+- **CLI (`fluffy status`)**: Displays the active background normalization task under `Background Task`.
+
+---
+
 ## 🏛️ Architecture Overview
+
 
 ```text
 User / Autostart / Settings GUI / CLI

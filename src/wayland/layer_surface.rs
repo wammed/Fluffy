@@ -118,7 +118,46 @@ impl WallpaperSurface {
             )
             .map_err(|e| FluffyError::Wayland(format!("Failed to create shm buffer: {e}")))?;
 
-        // Opaque black base (0xFF000000) so underlying desktop wallpaper never flashes through
+        // Fully transparent base (0x00000000) so underlying desktop wallpaper remains
+        // visible without turning into an annoying black screen during transcoding/preroll.
+        for chunk in canvas.as_chunks_mut::<4>().0 {
+            chunk[0] = 0x00; // Blue
+            chunk[1] = 0x00; // Green
+            chunk[2] = 0x00; // Red
+            chunk[3] = 0x00; // Alpha = 0 (transparent)
+        }
+
+        layer_surface
+            .wl_surface()
+            .damage_buffer(0, 0, width as i32, height as i32);
+        buffer
+            .attach_to(layer_surface.wl_surface())
+            .map_err(|e| FluffyError::Wayland(format!("Buffer attach failed: {e}")))?;
+        layer_surface.commit();
+
+        Ok(())
+    }
+
+    pub fn attach_black_base_buffer(&mut self) -> Result<()> {
+        let Some(layer_surface) = self.layer_surface.as_ref() else {
+            return Ok(());
+        };
+
+        let width = self.width;
+        let height = self.height;
+        let stride = width as i32 * 4;
+
+        let (buffer, canvas) = self
+            .pool
+            .create_buffer(
+                width as i32,
+                height as i32,
+                stride,
+                wl_shm::Format::Argb8888,
+            )
+            .map_err(|e| FluffyError::Wayland(format!("Failed to create shm buffer: {e}")))?;
+
+        // Opaque black base (0xFF000000)
         for chunk in canvas.as_chunks_mut::<4>().0 {
             chunk[0] = 0x00; // Blue
             chunk[1] = 0x00; // Green
@@ -136,6 +175,7 @@ impl WallpaperSurface {
 
         Ok(())
     }
+
 
     pub fn destroy(&mut self, ctx: &mut WaylandContext) {
         if let Some(layer) = self.layer_surface.take() {

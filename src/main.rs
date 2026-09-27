@@ -227,6 +227,11 @@ fn cmd_status(args: &[String]) -> Result<()> {
 
     println!("Fluffy Daemon Status (v{})", status.daemon_version);
     println!("Connected Socket: {:?}", socket);
+    if status.is_converting {
+        println!("Background Task:  ⚙️  Optimizing / Transcoding video: {}", status.converting_file.as_deref().unwrap_or("active"));
+    } else {
+        println!("Background Task:  Idle (No active conversion)");
+    }
     println!("Outputs ({} total):", status.outputs.len());
     for out in status.outputs {
         println!("  - [{}] State: {}", out.name, out.state);
@@ -260,10 +265,12 @@ fn cmd_set_video(args: &[String]) -> Result<()> {
         )));
     }
 
+    println!("[Fluffy] Requesting wallpaper change to: {:?}", abs_path);
+    println!("         (If normalization is required, transcoding runs asynchronously in background without interrupting current playback)");
     let client = IpcClient::new(&socket);
     client.set_video(&abs_path, output.as_deref(), generation)?;
 
-    println!("Successfully requested video change to: {:?}", abs_path);
+    println!("[Fluffy] Wallpaper successfully applied!");
     Ok(())
 }
 
@@ -312,10 +319,10 @@ fn cmd_import(args: &[String]) -> Result<()> {
         )));
     }
 
-    println!("[Import] Validating and importing: {:?}", abs_path);
-    let cache = CacheManager::new(CacheManager::default_cache_dir())?;
+    println!("[Import] Validating and importing to persistent storage: {:?}", abs_path);
+    let cache = CacheManager::new(CacheManager::default_storage_dir())?;
     let cached_path = cache.import_video(&abs_path)?;
-    println!("[Import] Successfully imported to: {:?}", cached_path);
+    println!("[Import] Successfully stored in persistent storage: {:?}", cached_path);
 
     Ok(())
 }

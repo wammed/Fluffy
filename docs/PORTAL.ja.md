@@ -31,11 +31,13 @@ Fluffy は、Pop!_OS COSMIC Desktop および Linux Wayland コンポジター�
 
 ### 2. CLI および GUI からの壁紙操作
 - **CLI コマンド一覧**: [ルート README: CLI コマンド仕様](../README.ja.md#-cli-コマンド仕様) にて `fluffy set-video`, `fluffy pause`, `fluffy resume`, `fluffy stop`, `fluffy status` の利用法を確認できます。
-- **GUI による直感操作**: `fluffy-settings` を起動して、対象ディスプレイの選択、動画ファイルの参照・キャッシュ変換、適用をマウス操作で行えます。
+- **GUI による直感操作**: `fluffy-settings` を起動して、対象ディスプレイの選択、動画ファイルの参照、適用をマウス操作で行えます。変換中は回転アニメーションインジケータが表示されます。
+- **動画フォーマット適合規格**: [ルート README: 動画フォーマット適合規格](../README.ja.md#-動画フォーマット適合規格とストレージ仕様) にて、即時再生できる適合規格（H.264/yuv420p/30fps）と、初回バックグラウンド変換の仕様を確認できます。
+- **永続ストレージ (`~/.local/share/fluffy/storage`)**: 変換済みおよび適合動画は永続ストレージに保存され、ユーザーが明示的に削除するまで恒久保持されます。
 
 ### 3. アーキテクチャとプロトコルの詳細理解
 - **非破壊オーバーレイ共存モデル**: [TECHNICAL_DESIGN.ja.md: セクション 3 & 4](TECHNICAL_DESIGN.ja.md) を参照し、`cosmic-bg` と干渉せず `Layer::Bottom` で描画・復帰する仕組みを理解できます。
-- **黒画面ゼロ・プリロール切替**: [TECHNICAL_DESIGN.ja.md: セクション 8](TECHNICAL_DESIGN.ja.md) にてデュアルパイプライン切り替え構造を詳解しています。
+- **黒画面ゼロ・プリロール切替 & 非同期変換**: [TECHNICAL_DESIGN.ja.md: セクション 8 & 11](TECHNICAL_DESIGN.ja.md) にてデュアルパイプライン切り替え構造および非同期バックグラウンド変換を詳解しています。
 - **IPC 通信仕様**: [TECHNICAL_DESIGN.ja.md: セクション 9](TECHNICAL_DESIGN.ja.md) にて Unix ドメインソケット上の JSON Lines プロトコル仕様を確認できます。
 
 ### 4. 性能実績と実機検証エビデンスの確認

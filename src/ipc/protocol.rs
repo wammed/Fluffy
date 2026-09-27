@@ -113,7 +113,12 @@ pub struct OutputStatus {
 pub struct DaemonStatus {
     pub daemon_version: String,
     pub outputs: Vec<OutputStatus>,
+    #[serde(default)]
+    pub is_converting: bool,
+    #[serde(default)]
+    pub converting_file: Option<String>,
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -175,6 +180,8 @@ mod tests {
                 generation: 1,
                 loop_count: 5,
             }],
+            is_converting: false,
+            converting_file: None,
         };
 
         let val = serde_json::to_value(&status).unwrap();

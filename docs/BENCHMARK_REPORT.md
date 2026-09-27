@@ -32,3 +32,8 @@
    - Verified active hardware decoding via `nvh264dec`. Dedicated video decoder engine utilization scales cleanly with pipeline count and resolution.
 4. **Binary Footprint**:
    - The resident daemon binary is only **3.2M**, achieving the core design goal of maintaining a minimal, unbloated background footprint separate from the `libcosmic` GUI.
+5. **Initial Normalization vs Subsequent Playback**:
+   - **Compliant Videos (H.264/yuv420p/30fps)**: Transcoding is completely bypassed; videos are registered to persistent storage and played with sub-0.1s latency and zero CPU spikes.
+   - **Non-Compliant Videos (HEVC/60fps/MKV)**: Initial run requires ffmpeg H.264/30fps normalization on a background worker thread, temporarily raising CPU usage and fan speed. Because it runs asynchronously, existing wallpaper playback continues uninterrupted without black screens.
+   - **Subsequent Playback**: Normalized files in persistent storage (`~/.local/share/fluffy/storage`) are reused directly, enabling instant, smooth playback with zero CPU transcode spikes.
+

@@ -2,7 +2,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        mpsc, Arc,
     },
     thread,
     time::Duration,
@@ -15,12 +15,21 @@ use crate::{
         protocol::{
             CommandType, DaemonStatus, OutputStatus, RequestEnvelope, ResponseEnvelope,
         },
+        server::{ClientId, PendingRequest},
         IpcServer,
     },
     playback::VideoPlayer,
     wayland::{WaylandContext, WaylandOutputEvent},
 };
 use super::output_manager::OutputManager;
+
+struct TranscodeJobResult {
+    request_id: u64,
+    client_id: Option<ClientId>,
+    target_output: Option<String>,
+    generation: Option<u64>,
+    result: Result<std::path::PathBuf>,
+}
 
 pub struct WallpaperDaemon {
     pub wayland_ctx: WaylandContext,
@@ -29,6 +38,9 @@ pub struct WallpaperDaemon {
     pub ipc_server: IpcServer,
     pub exit_flag: Arc<AtomicBool>,
     pub requested_output: Option<String>,
+    transcode_tx: mpsc::Sender<TranscodeJobResult>,
+    transcode_rx: mpsc::Receiver<TranscodeJobResult>,
+    pub current_converting: Option<String>,
 }
 
 impl WallpaperDaemon {
@@ -39,7 +51,7 @@ impl WallpaperDaemon {
         requested_output: Option<&str>,
         exit_flag: Arc<AtomicBool>,
     ) -> Result<Self> {
-        let cache = CacheManager::new(CacheManager::default_cache_dir())?;
+        let cache = CacheManager::new(CacheManager::default_storage_dir())?;
         let mut wayland_ctx = WaylandContext::init()?;
 
         let outputs_info = wayland_ctx.outputs();
@@ -76,6 +88,7 @@ impl WallpaperDaemon {
         );
 
         let ipc_server = IpcServer::bind(socket_path)?;
+        let (transcode_tx, transcode_rx) = mpsc::channel();
 
         Ok(Self {
             wayland_ctx,
@@ -84,8 +97,12 @@ impl WallpaperDaemon {
             ipc_server,
             exit_flag,
             requested_output: requested_output.map(|s| s.to_string()),
+            transcode_tx,
+            transcode_rx,
+            current_converting: None,
         })
     }
+
 
     /// Handles dynamic Wayland output addition, update, and removal (hotplug).
     pub fn handle_output_events(&mut self) -> Result<()> {
@@ -134,7 +151,7 @@ impl WallpaperDaemon {
         Ok(())
     }
 
-    /// Handles a single IPC request envelope and produces an IPC response.
+    /// Handles a single IPC request envelope synchronously (used during initial daemon setup or direct calls).
     pub fn handle_request(&mut self, req: &RequestEnvelope) -> ResponseEnvelope {
         match req.command {
             CommandType::Status => {
@@ -151,12 +168,13 @@ impl WallpaperDaemon {
                         loop_count: out.player.loop_count(),
                     });
                 }
-                // Sort by name for deterministic order
                 output_statuses.sort_by(|a, b| a.name.cmp(&b.name));
 
                 let status = DaemonStatus {
                     daemon_version: env!("CARGO_PKG_VERSION").to_string(),
                     outputs: output_statuses,
+                    is_converting: self.current_converting.is_some(),
+                    converting_file: self.current_converting.clone(),
                 };
 
                 match serde_json::to_value(&status) {
@@ -180,7 +198,6 @@ impl WallpaperDaemon {
                     );
                 }
 
-                // If specific output was requested, verify it exists
                 if let Some(ref target_name) = req.output {
                     if !self.outputs.contains(target_name) {
                         return ResponseEnvelope::failure(
@@ -190,7 +207,6 @@ impl WallpaperDaemon {
                     }
                 }
 
-                // Import, validate (4K policy) and normalize into cache
                 let cached_path = match self.cache.import_video(path) {
                     Ok(p) => p,
                     Err(e) => {
@@ -241,8 +257,122 @@ impl WallpaperDaemon {
         }
     }
 
-    /// Performs one iteration of Wayland event dispatch, player polling, and IPC handling.
+    /// Handles an incoming IPC pending request. `SetVideo` commands are dispatched
+    /// asynchronously to worker threads so the main event loop and ongoing video playback
+    /// are never blocked, preventing black screens and stalled frame rendering.
+    fn handle_pending_request(&mut self, pending: PendingRequest) {
+        let req = pending.request;
+        let client_id = pending.client_id;
+
+        match req.command {
+            CommandType::SetVideo => {
+                let Some(ref path) = req.path else {
+                    let resp = ResponseEnvelope::failure(
+                        req.request_id,
+                        "'set_video' command requires 'path'",
+                    );
+                    let _ = self.ipc_server.respond(client_id, &resp);
+                    return;
+                };
+
+                if !path.exists() {
+                    let resp = ResponseEnvelope::failure(
+                        req.request_id,
+                        format!("Video file does not exist: {:?}", path),
+                    );
+                    let _ = self.ipc_server.respond(client_id, &resp);
+                    return;
+                }
+
+                if let Some(target_name) = req.output.as_deref() {
+                    if !self.outputs.contains(target_name) {
+                        let resp = ResponseEnvelope::failure(
+                            req.request_id,
+                            format!("Output '{}' not managed by daemon", target_name),
+                        );
+                        let _ = self.ipc_server.respond(client_id, &resp);
+                        return;
+                    }
+                }
+
+                let path_buf = path.clone();
+                let storage_dir = self.cache.root_dir().to_path_buf();
+                let tx = self.transcode_tx.clone();
+                let request_id = req.request_id;
+                let target_output = req.output.clone();
+                let generation = req.generation;
+
+                let file_name_str = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
+                self.current_converting = Some(file_name_str);
+
+                tracing::info!(
+                    "[Daemon] Asynchronously normalizing and storing video: {:?} (target: {:?})",
+                    path, target_output
+                );
+
+                // Run import_video on worker thread to never block main loop & Wayland dispatch
+                thread::spawn(move || {
+                    let manager = CacheManager::new(&storage_dir);
+                    let result = match manager {
+                        Ok(mgr) => mgr.import_video(&path_buf),
+                        Err(e) => Err(e),
+                    };
+
+                    let _ = tx.send(TranscodeJobResult {
+                        request_id,
+                        client_id: Some(client_id),
+                        target_output,
+                        generation,
+                        result,
+                    });
+                });
+            }
+
+            _ => {
+                let resp = self.handle_request(&req);
+                let _ = self.ipc_server.respond(client_id, &resp);
+            }
+        }
+    }
+
+    /// Performs one iteration of Wayland event dispatch, player polling, IPC handling,
+    /// and background transcode job completion.
     pub fn step(&mut self) -> Result<()> {
+        // 0. Poll completed background transcode jobs
+        while let Ok(job) = self.transcode_rx.try_recv() {
+            self.current_converting = None;
+            match job.result {
+                Ok(cached_path) => {
+                    tracing::info!(
+                        "[Daemon] Normalization complete, applying wallpaper seamlessly: {:?}",
+                        cached_path
+                    );
+                    let apply_res = self.outputs.set_video(
+                        job.target_output.as_deref(),
+                        &cached_path,
+                        job.generation,
+                    );
+                    if let Some(client_id) = job.client_id {
+                        let resp = match apply_res {
+                            Ok(()) => ResponseEnvelope::success(job.request_id, None),
+                            Err(e) => ResponseEnvelope::failure(job.request_id, e.to_string()),
+                        };
+                        let _ = self.ipc_server.respond(client_id, &resp);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("[Daemon] Background normalization failed: {e}");
+                    if let Some(client_id) = job.client_id {
+                        let resp = ResponseEnvelope::failure(
+                            job.request_id,
+                            format!("Video normalization failed: {e}"),
+                        );
+                        let _ = self.ipc_server.respond(client_id, &resp);
+                    }
+                }
+            }
+        }
+
         // 1. Dispatch pending Wayland compositor events
         self.wayland_ctx.dispatch_pending()?;
 
@@ -255,12 +385,12 @@ impl WallpaperDaemon {
         // 3. Poll and process IPC requests
         let pending_requests = self.ipc_server.poll_requests()?;
         for pending in pending_requests {
-            let response = self.handle_request(&pending.request);
-            let _ = self.ipc_server.respond(pending.client_id, &response);
+            self.handle_pending_request(pending);
         }
 
         Ok(())
     }
+
 
     /// Runs the daemon main loop until a shutdown signal is received.
     pub fn run(&mut self) -> Result<()> {

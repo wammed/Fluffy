@@ -1009,13 +1009,20 @@ Implemented and verified:
   - Normalizes to H.264 / `yuv420p` / 30fps / no audio (`-an`) / no subtitles (`-sn`) / even dimensions.
   - Safe external process execution via argument arrays without shell interpolation.
   - Immediate cleanup of temporary files on conversion failure.
-- [x] Atomic cache storage (`src/cache/manager.rs`):
-  - Content-based SHA-256 hash naming (`~/.cache/fluffy/objects/<sha256>.mp4`).
-  - Metadata tracking (`~/.cache/fluffy/metadata/<sha256>.json`).
+- [x] Persistent storage & compatibility bypass (`src/cache/manager.rs` & `src/cache/probe.rs`):
+  - Moved from ephemeral cache to persistent storage (`~/.local/share/fluffy/storage/videos/<sha256>.mp4`).
+  - Compatible video profile bypass: videos matching H.264/`yuv420p`/<=30fps/even dims/<=4K bypass ffmpeg entirely and copy directly (instantaneous, 0 CPU).
+  - Non-compliant videos (HEVC, AV1, 60fps+, odd dimensions) undergo automatic normalization in background worker threads.
+  - Transparent initial layer surface base buffer (`0x00000000`), preserving the desktop wallpaper during initial conversion without black screen interruptions.
+  - Asynchronous normalization via dedicated worker threads keeps Wayland event dispatch and ongoing video loops running smoothly.
+  - Visual animated conversion indicators in `fluffy-settings` and status reporting in `fluffy status`.
+- [x] Atomic storage writing (`src/cache/manager.rs`):
+  - Content-based SHA-256 hash naming (`~/.local/share/fluffy/storage/videos/<sha256>.mp4`).
+  - Metadata tracking (`~/.local/share/fluffy/storage/metadata/<sha256>.json`).
   - Collision-free unique temporary files (`.tmp.<pid>.<timestamp>.<hash>.mp4`) with atomic rename.
-  - Automatic cache hit detection and zero-overhead reuse.
+  - Automatic storage hit detection and zero-overhead reuse.
 - [x] Integration with WallpaperDaemon controller and CLI (`fluffy import <path>` and automatic normalization on `set-video`).
-- [x] Unit & integration tests for 4K validation, odd dimensions, hash generation, atomic write, and cache reuse.
+- [x] Unit & integration tests for 4K validation, odd dimensions, hash generation, atomic write, bypass check, and reuse.
 
 ### Phase 5 --- Multi-output [DONE - Real-hardware-tested]
 

@@ -31,11 +31,13 @@ Use this portal to navigate specifications, architecture design records, benchma
 
 ### 2. Controlling Playback via CLI & GUI
 - **CLI Commands**: See [Root README: CLI Usage](../README.md#-cli-usage) for `fluffy set-video`, `fluffy pause`, `fluffy resume`, `fluffy stop`, and `fluffy status`.
-- **GUI Control**: Launch `fluffy-settings` to visually select target monitors, browse videos, and apply live wallpapers.
+- **GUI Control**: Launch `fluffy-settings` to visually select target monitors, browse videos, and apply live wallpapers. An animated indicator displays during normalization.
+- **Video Specifications**: Review [Root README: Video Specifications](../README.md#-video-specifications--persistent-storage) for details on zero-CPU compliant profiles (H.264/yuv420p/30fps) and non-blocking background normalization.
+- **Persistent Storage (`~/.local/share/fluffy/storage`)**: Wallpapers are kept in persistent storage until explicitly deleted.
 
 ### 3. Understanding the Architecture & Protocols
 - **Non-Destructive Overlay Model**: Read [TECHNICAL_DESIGN.md: Section 3 & 4](TECHNICAL_DESIGN.md#3-core-architecture) to understand how Fluffy renders on `Layer::Bottom` without interfering with `cosmic-bg`.
-- **Zero-Flicker Pre-Roll Switching**: Check [TECHNICAL_DESIGN.md: Section 8](TECHNICAL_DESIGN.md#8-playback-architecture) for details on the dual-pipeline seamless switching model.
+- **Zero-Black-Screen Pre-Roll & Async Normalization**: Check [TECHNICAL_DESIGN.md: Section 8 & 11](TECHNICAL_DESIGN.md) for details on the dual-pipeline seamless switching model and non-blocking worker threads.
 - **IPC Protocol**: Review [TECHNICAL_DESIGN.md: Section 9](TECHNICAL_DESIGN.md#9-ipc-specification) for the JSON Lines Unix domain socket protocol specification.
 
 ### 4. Reviewing Performance & Hardware Evidence
