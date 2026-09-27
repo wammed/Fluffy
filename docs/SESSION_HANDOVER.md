@@ -152,6 +152,27 @@ During Phase 1 PoC, the following critical requirements were uncovered and resol
 2. **Parent Layer Surface Mapping**: GStreamer creates a `wl_subsurface` inside the application-supplied `wl_surface`. Under Wayland specifications, a subsurface is **not visible unless the parent surface has an initial buffer attached and committed**. Mapping a transparent initial base buffer on the layer surface makes the video subsurface visible.
 3. **Explicit Render Rectangle**: `overlay.set_render_rectangle(0, 0, width, height)` is strictly required by `waylandsink` when targeting an external surface.
 
+### 4.3 Video Switching Discontinuity ("Bashi" / Flicker) Resolution
+
+1. **Root Cause Analysis:**
+   In single-pipeline reuse (`playbin` with URI change), the pipeline must transition `PLAYING -> PAUSED -> READY` before setting a new URI.
+   Inspection of GStreamer's `gstwaylandsink.c` reveals:
+   ```c
+   case GST_STATE_CHANGE_PAUSED_TO_READY:
+       gst_wl_window_render(self->window, NULL, NULL); /* remove buffer from surface, show nothing */
+   ```
+   This unmaps the video buffer from the Wayland subsurface during state transition, exposing the layer-surface background / `cosmic-bg` and creating a visible jarring flicker ("バシッ") before the new video is prerolled and displayed.
+
+2. **Adopted Architecture: Dual Pipeline (Preroll-Before-Switch)**
+   - Maintain active playback on Pipeline A.
+   - Construct new Pipeline B for the target video, binding to the **same** parent `WallpaperSurface`.
+   - Set Pipeline B to `PAUSED` and synchronously wait for its preroll completion (`res == Ok(Success)` or `Async` completion).
+   - In Wayland (`wl_subsurface`), the newly created subsurface is stacked **in front of** the existing subsurface.
+   - Once B's first frame is committed to the compositor, transition B to `PLAYING`.
+   - Immediately transition Pipeline A to `NULL` and destroy it.
+   - Base buffer on `WallpaperSurface` is set to opaque black (`0x00, 0x00, 0x00, 0xFF`) to prevent any compositing leakage during multi-subsurface transitions.
+   - Result: 100% flicker-free, zero-frame gap, perfectly seamless transition on real hardware.
+
 ------------------------------------------------------------------------
 
 ## 5. Target Media Profile

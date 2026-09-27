@@ -84,8 +84,10 @@ fn main() -> Result<()> {
     let video1 = PathBuf::from("test.mp4");
     let video2 = PathBuf::from("test2.mp4");
 
+    let switch_loop = args.iter().any(|a| a == "--switch-loop");
+
     if continuous_loop {
-        // Continuous loop mode
+        // Continuous loop mode with single video
         println!("[Main] Starting continuous loop mode with {:?}...", video1);
         player.play(&video1)?;
 
@@ -96,20 +98,13 @@ fn main() -> Result<()> {
                 break;
             }
         }
-    } else {
-        // Phase 2 Lifecycle Verification Scenario:
-        // Play video1 (4s) -> Pause (2s) -> Resume (3s) -> Switch to video2 (4s) -> Done
-        println!("[Main] Starting Phase 2 Playback Lifecycle Test Scenario:");
-        println!("       Step 1: Play 'test.mp4' (4 seconds)");
-        println!("       Step 2: Pause playback (2 seconds)");
-        println!("       Step 3: Resume playback (3 seconds)");
-        println!("       Step 4: Switch video to 'test2.mp4' (4 seconds)");
-        println!("       Step 5: Clean teardown");
-
-        // Step 1: Play video1
+    } else if switch_loop {
+        // Continuous alternating switch mode (every 3 seconds) for manual visual inspection
+        println!("[Main] Starting continuous switch-loop mode (alternating test.mp4 <-> test2.mp4 every 3s)...");
+        println!("[Main] Press Ctrl+C anytime to stop and cleanly teardown.");
         player.play(&video1)?;
-        let mut phase = 1;
-        let mut phase_start = Instant::now();
+        let mut current_video = 1;
+        let mut last_switch = Instant::now();
 
         while !exit_flag.load(Ordering::SeqCst) {
             wayland_ctx.dispatch_pending()?;
@@ -117,27 +112,99 @@ fn main() -> Result<()> {
                 break;
             }
 
-            match phase {
-                1 if phase_start.elapsed().as_secs() >= 4 => {
-                    println!("\n[Scenario] Step 2: Testing PAUSE...");
-                    player.pause()?;
-                    phase = 2;
-                    phase_start = Instant::now();
-                }
-                2 if phase_start.elapsed().as_secs() >= 2 => {
-                    println!("\n[Scenario] Step 3: Testing RESUME...");
-                    player.resume()?;
-                    phase = 3;
-                    phase_start = Instant::now();
-                }
-                3 if phase_start.elapsed().as_secs() >= 3 => {
-                    println!("\n[Scenario] Step 4: Testing VIDEO SWITCH to 'test2.mp4'...");
+            if last_switch.elapsed().as_secs() >= 3 {
+                if current_video == 1 {
+                    println!("\n[SwitchLoop] Switching A (test.mp4) -> B (test2.mp4)...");
                     player.play(&video2)?;
-                    phase = 4;
-                    phase_start = Instant::now();
+                    current_video = 2;
+                } else {
+                    println!("\n[SwitchLoop] Switching B (test2.mp4) -> A (test.mp4)...");
+                    player.play(&video1)?;
+                    current_video = 1;
                 }
-                4 if phase_start.elapsed().as_secs() >= 4 => {
-                    println!("\n[Scenario] Step 5: Scenario completed successfully!");
+                last_switch = Instant::now();
+            }
+        }
+    } else {
+        // Comprehensive Video Switching Verification Scenario:
+        // 1. Initial play video A (test.mp4, 3s)
+        // 2. Switch A -> B (test2.mp4, 3s) [Normal switch, different content]
+        // 3. Switch B -> A (test.mp4, 3s) [Reverse switch]
+        // 4. Pause (1.5s) & Resume (2s) verification
+        // 5. Rapid continuous switching: A -> B (1.5s) -> A (1.5s) -> B (1.5s) -> A (1.5s)
+        // 6. Loop playback verification (3s) -> Clean teardown
+        println!("[Main] Starting Comprehensive Video Switching Verification Scenario:");
+        println!("       Step 1: Play 'test.mp4' (3s)");
+        println!("       Step 2: Normal switch -> 'test2.mp4' (3s)");
+        println!("       Step 3: Reverse switch -> 'test.mp4' (3s)");
+        println!("       Step 4: Pause (1.5s) & Resume (2s)");
+        println!("       Step 5: Rapid continuous switches (A -> B -> A -> B -> A)");
+        println!("       Step 6: Completion & Clean teardown");
+
+        // Step 1: Play video A
+        player.play(&video1)?;
+        let mut step = 1;
+        let mut step_start = Instant::now();
+
+        while !exit_flag.load(Ordering::SeqCst) {
+            wayland_ctx.dispatch_pending()?;
+            if !player.poll_events()? {
+                break;
+            }
+
+            let elapsed_ms = step_start.elapsed().as_millis();
+
+            match step {
+                1 if elapsed_ms >= 3000 => {
+                    println!("\n[Scenario] Step 2: Normal Switch A (test.mp4) -> B (test2.mp4)...");
+                    player.play(&video2)?;
+                    step = 2;
+                    step_start = Instant::now();
+                }
+                2 if elapsed_ms >= 3000 => {
+                    println!("\n[Scenario] Step 3: Reverse Switch B (test2.mp4) -> A (test.mp4)...");
+                    player.play(&video1)?;
+                    step = 3;
+                    step_start = Instant::now();
+                }
+                3 if elapsed_ms >= 3000 => {
+                    println!("\n[Scenario] Step 4a: Testing PAUSE...");
+                    player.pause()?;
+                    step = 4;
+                    step_start = Instant::now();
+                }
+                4 if elapsed_ms >= 1500 => {
+                    println!("\n[Scenario] Step 4b: Testing RESUME...");
+                    player.resume()?;
+                    step = 5;
+                    step_start = Instant::now();
+                }
+                5 if elapsed_ms >= 2000 => {
+                    println!("\n[Scenario] Step 5a: Rapid Switch -> B (test2.mp4)...");
+                    player.play(&video2)?;
+                    step = 6;
+                    step_start = Instant::now();
+                }
+                6 if elapsed_ms >= 1500 => {
+                    println!("\n[Scenario] Step 5b: Rapid Switch -> A (test.mp4)...");
+                    player.play(&video1)?;
+                    step = 7;
+                    step_start = Instant::now();
+                }
+                7 if elapsed_ms >= 1500 => {
+                    println!("\n[Scenario] Step 5c: Rapid Switch -> B (test2.mp4)...");
+                    player.play(&video2)?;
+                    step = 8;
+                    step_start = Instant::now();
+                }
+                8 if elapsed_ms >= 1500 => {
+                    println!("\n[Scenario] Step 5d: Rapid Switch -> A (test.mp4)...");
+                    player.play(&video1)?;
+                    step = 9;
+                    step_start = Instant::now();
+                }
+                9 if elapsed_ms >= 3000 => {
+                    println!("\n[Scenario] All verification steps completed successfully!");
                     break;
                 }
                 _ => {}

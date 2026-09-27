@@ -105,7 +105,7 @@ impl WallpaperSurface {
             .map_err(|e| FluffyError::Wayland(format!("Failed to create shm buffer: {e}")))?;
 
         // Opaque black base (0xFF000000) so underlying desktop wallpaper never flashes through
-        for chunk in canvas.chunks_exact_mut(4) {
+        for chunk in canvas.as_chunks_mut::<4>().0 {
             chunk[0] = 0x00; // Blue
             chunk[1] = 0x00; // Green
             chunk[2] = 0x00; // Red

@@ -21,7 +21,9 @@ pub struct PipelineHandle {
 }
 
 impl PipelineHandle {
-    pub fn new(
+    /// # Safety
+    /// `raw_display_ptr` must be a valid pointer to a `wl_display`.
+    pub unsafe fn new(
         raw_display_ptr: *mut std::ffi::c_void,
         raw_surface_ptr: usize,
         width: u32,
@@ -32,9 +34,10 @@ impl PipelineHandle {
         let uri = format!("file://{}", abs_path.display());
 
         // 1. Create Wayland display handle context
-        let gst_wl_context_raw = unsafe { gst_wl_display_handle_context_new(raw_display_ptr) };
-        let gst_wl_context: gstreamer::Context =
-            unsafe { FromGlibPtrFull::from_glib_full(gst_wl_context_raw) };
+        let gst_wl_context: gstreamer::Context = unsafe {
+            let raw = gst_wl_display_handle_context_new(raw_display_ptr);
+            FromGlibPtrFull::from_glib_full(raw)
+        };
 
         // 2. Create dedicated waylandsink and apply context immediately
         let sink = gstreamer::ElementFactory::make("waylandsink")

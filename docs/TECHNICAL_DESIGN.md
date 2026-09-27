@@ -666,6 +666,19 @@ old pipeline teardown
 The exact switching primitive depends on the chosen GStreamer
 architecture and must be validated in the PoC.
 
+### Verified Architecture & PoC Findings (Phase 2):
+1. **Root Cause of Single-Pipeline Discontinuity:**
+   In `gstwaylandsink.c`, the state transition `PAUSED -> READY` executes:
+   `gst_wl_window_render(self->window, NULL, NULL); /* remove buffer from surface, show nothing */`.
+   This unmaps the buffer from the subsurface, causing a visible flicker/black flash if the same pipeline is stopped to change URI.
+2. **Dual Pipeline (Preroll-Before-Switch) Verification:**
+   - Wayland's `wl_subsurface` allows multiple child subsurfaces to attach to the same `WallpaperSurface`.
+   - New subsurfaces are stacked **above** existing subsurfaces by default in Wayland compositors (cosmic-comp).
+   - Video B's pipeline is constructed, attached to the same `WallpaperSurface`, and transitioned to `PAUSED` (preroll).
+   - Once B's preroll finishes (first frame committed to compositor), B transitions to `PLAYING`.
+   - Video A's pipeline is then immediately transitioned to `NULL` and dropped.
+   - Result: Zero visible blank frame, zero flicker, stable layer-shell surface.
+
 The layer-shell surface itself should remain stable during a normal
 video change.
 

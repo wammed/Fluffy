@@ -56,41 +56,67 @@ impl GstVideoPlayer {
 
 impl VideoPlayer for GstVideoPlayer {
     fn play(&mut self, video: &Path) -> Result<()> {
-        let abs_path = video.canonicalize()?;
-        let uri = format!("file://{}", abs_path.display());
+        // Seamless transition with Dual Pipeline:
+        // 1. If an active pipeline exists, keep it running so old frames remain visible.
+        // 2. Instantiate a new pipeline for the incoming video targeting the same layer surface.
+        // 3. Set the new pipeline to PAUSED to preroll the first frame onto its new subsurface.
+        // 4. Wait for preroll to complete (first frame is committed to the compositor).
+        // 5. Transition the new pipeline to PLAYING.
+        // 6. Tear down the old pipeline (its subsurface is cleanly removed underneath).
+        if self.pipeline_handle.is_some() {
+            println!(
+                "[Player] Seamless transition: prerolling new video before releasing old: {:?}",
+                video
+            );
 
-        // Seamless switching: If pipeline already exists, reuse it and change URI
-        // to avoid destroying waylandsink and flashing the underlying desktop wallpaper.
-        if let Some(ref handle) = self.pipeline_handle {
-            println!("[Player] Seamlessly switching video to: {:?}", video);
+            let new_handle = unsafe {
+                PipelineHandle::new(
+                    self.raw_display_ptr,
+                    self.raw_surface_ptr,
+                    self.width,
+                    self.height,
+                    video,
+                )?
+            };
 
-            // Change to Ready to reset demuxer/decoders while preserving waylandsink surface
-            handle.pipeline.set_state(gstreamer::State::Ready)?;
-            handle.pipeline.set_property("uri", uri);
+            // Transition to Paused so preroll renders the first frame into waylandsink subsurface
+            new_handle.pipeline.set_state(gstreamer::State::Paused)?;
 
-            // Transition to Paused for prerolling the first frame
-            handle.pipeline.set_state(gstreamer::State::Paused)?;
-            let _ = handle.pipeline.state(gstreamer::ClockTime::from_mseconds(500));
+            // Wait for preroll to complete (first frame is committed to the compositor)
+            let (state_change_res, current_st, pending_st) =
+                new_handle.pipeline.state(gstreamer::ClockTime::from_seconds(3));
+            println!(
+                "[Player] Preroll completed: res={:?}, current={:?}, pending={:?}",
+                state_change_res, current_st, pending_st
+            );
 
-            // Start playing new video
-            handle.pipeline.set_state(gstreamer::State::Playing)?;
+            // Now transition new pipeline to Playing
+            new_handle.pipeline.set_state(gstreamer::State::Playing)?;
+
+            // Swap out old handle and tear it down cleanly
+            let old_handle = self.pipeline_handle.replace(new_handle);
+            if let Some(old) = old_handle {
+                let _ = old.pipeline.set_state(gstreamer::State::Null);
+            }
 
             self.current_video = Some(video.to_path_buf());
             self.state = PlaybackState::Playing;
             self.loop_count = 0;
 
-            println!("[Player] Switched playback to: {:?}", video);
+            println!("[Player] Seamless transition finished for: {:?}", video);
             return Ok(());
         }
 
         // Initial playback: create pipeline and start
-        let handle = PipelineHandle::new(
-            self.raw_display_ptr,
-            self.raw_surface_ptr,
-            self.width,
-            self.height,
-            video,
-        )?;
+        let handle = unsafe {
+            PipelineHandle::new(
+                self.raw_display_ptr,
+                self.raw_surface_ptr,
+                self.width,
+                self.height,
+                video,
+            )?
+        };
 
         handle.pipeline.set_state(gstreamer::State::Playing)?;
 
@@ -170,27 +196,26 @@ impl VideoPlayer for GstVideoPlayer {
                     self.state = PlaybackState::Stopped;
                     return Ok(false);
                 }
-                MessageView::NeedContext(msg) => {
-                    let ctx_type = msg.context_type();
-                    if ctx_type == "GstWaylandDisplayHandleContextType"
-                        || ctx_type == "GstWlDisplayHandleContextType"
+                MessageView::NeedContext(msg)
+                    if msg.context_type() == "GstWaylandDisplayHandleContextType"
+                        || msg.context_type() == "GstWlDisplayHandleContextType" =>
+                {
+                    if let Some(elem) = msg
+                        .src()
+                        .and_then(|src| src.clone().downcast::<gstreamer::Element>().ok())
                     {
-                        if let Some(src) = msg.src() {
-                            if let Ok(elem) = src.clone().downcast::<gstreamer::Element>() {
-                                elem.set_context(&handle.gst_wl_context);
-                            }
-                        }
+                        elem.set_context(&handle.gst_wl_context);
                     }
                 }
-                MessageView::Element(msg) => {
-                    if gstreamer_video::is_video_overlay_prepare_window_handle_message(msg) {
-                        unsafe {
-                            handle.overlay.set_window_handle(self.raw_surface_ptr);
-                        }
-                        let _ = handle
-                            .overlay
-                            .set_render_rectangle(0, 0, self.width as i32, self.height as i32);
+                MessageView::Element(msg)
+                    if gstreamer_video::is_video_overlay_prepare_window_handle_message(msg) =>
+                {
+                    unsafe {
+                        handle.overlay.set_window_handle(self.raw_surface_ptr);
                     }
+                    let _ = handle
+                        .overlay
+                        .set_render_rectangle(0, 0, self.width as i32, self.height as i32);
                 }
                 _ => {}
             }
