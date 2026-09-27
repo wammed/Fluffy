@@ -50,11 +50,36 @@ impl CacheManager {
         fs::create_dir_all(&videos_dir)?;
         fs::create_dir_all(&metadata_dir)?;
 
-        Ok(Self {
+        let manager = Self {
             root_dir: root,
             videos_dir,
             metadata_dir,
-        })
+        };
+
+        // Automatically clean up orphaned temporary files from previous crashed sessions
+        if let Err(e) = manager.cleanup_stale_temp_files() {
+            tracing::debug!(error = %e, "[Storage] cleanup_stale_temp_files encountered an error on startup");
+        }
+
+        Ok(manager)
+    }
+
+    /// Cleans up orphaned temporary files (`.tmp.*`) created by previous crashed
+    /// or interrupted normalization tasks.
+    pub fn cleanup_stale_temp_files(&self) -> Result<usize> {
+        let mut cleaned = 0;
+        for dir in &[&self.videos_dir, &self.metadata_dir] {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name_str = name.to_string_lossy();
+                    if name_str.starts_with(".tmp.") && fs::remove_file(entry.path()).is_ok() {
+                        cleaned += 1;
+                    }
+                }
+            }
+        }
+        Ok(cleaned)
     }
 
     /// Returns the default persistent storage directory for video wallpapers:
@@ -116,7 +141,7 @@ impl CacheManager {
     /// 2. Computes the source content hash.
     /// 3. Checks if an existing valid storage object exists; if so, reuses it immediately.
     /// 4. If video is already a compatible profile (H.264, yuv420p, <=30fps, even dims, <=4K):
-    ///    bypasses transcoding and directly copies/hardlinks to storage (instantaneous, 0 CPU).
+    ///    bypasses transcoding and directly copies/hardlinks to storage (instantaneous, no transcoding CPU cost).
     /// 5. Otherwise, transcodes via ffmpeg to normalized standard profile.
     /// 6. Atomically moves temporary file to videos/<hash>.mp4.
     /// 7. Writes metadata/<hash>.json.
@@ -148,38 +173,46 @@ impl CacheManager {
         let final_video_path = self.videos_dir.join(&video_filename);
         let final_metadata_path = self.metadata_dir.join(&metadata_filename);
 
-        // 3. Check existing storage reuse (or legacy ~/.cache/fluffy/objects fallback)
-        if final_video_path.exists() && final_metadata_path.exists() {
-            if let Ok(meta) = fs::metadata(&final_video_path) {
-                if meta.len() > 0 {
-                    println!(
-                        "[Storage] Storage hit for {:?} -> reusing {:?}",
-                        canonical_source, final_video_path
-                    );
-                    return Ok(final_video_path);
-                }
-            }
+        // 3. Check existing storage reuse (or legacy storage migration)
+        if final_video_path.exists()
+            && final_metadata_path.exists()
+            && let Ok(meta) = fs::metadata(&final_video_path)
+            && meta.len() > 0
+        {
+            tracing::info!(
+                operation = "cache_lookup",
+                source = ?canonical_source,
+                destination = ?final_video_path,
+                "[Storage] Cache hit: reusing existing normalized video in storage"
+            );
+            return Ok(final_video_path);
         }
 
         // Backward compatibility: check if it was cached in root_dir/objects
         let legacy_cached = self.root_dir.join("objects").join(&video_filename);
         let legacy_meta = self.root_dir.join("metadata").join(&metadata_filename);
-        if legacy_cached.exists() {
-            if let Ok(meta) = fs::metadata(&legacy_cached) {
-                if meta.len() > 0 {
-                    let _ = fs::copy(&legacy_cached, &final_video_path);
-                    println!(
-                        "[Storage] Migrated legacy cache {:?} -> storage {:?}",
-                        legacy_cached, final_video_path
-                    );
-                    if legacy_meta.exists() && !final_metadata_path.exists() {
-                        let _ = fs::copy(&legacy_meta, &final_metadata_path);
-                    }
-                    return Ok(final_video_path);
-                }
+        if legacy_cached.exists()
+            && let Ok(meta) = fs::metadata(&legacy_cached)
+            && meta.len() > 0
+        {
+            if let Err(e) = fs::copy(&legacy_cached, &final_video_path) {
+                tracing::warn!(operation = "legacy_migration", error = %e, "[Storage] Failed to copy legacy cache video to storage");
+            } else {
+                tracing::info!(
+                    operation = "legacy_migration",
+                    legacy = ?legacy_cached,
+                    destination = ?final_video_path,
+                    "[Storage] Migrated legacy cache to persistent storage"
+                );
             }
+            if legacy_meta.exists()
+                && !final_metadata_path.exists()
+                && let Err(e) = fs::copy(&legacy_meta, &final_metadata_path)
+            {
+                tracing::debug!(operation = "legacy_migration", error = %e, "[Storage] Failed to copy legacy metadata");
+            }
+            return Ok(final_video_path);
         }
-
 
         // 4. Create unique temporary file for atomic installation
         let now = SystemTime::now()
@@ -190,25 +223,43 @@ impl CacheManager {
         let tmp_video_filename = format!(".tmp.{pid}.{now}.{hash}.mp4");
         let tmp_video_path = self.videos_dir.join(&tmp_video_filename);
 
+        let cleanup_tmp = |path: &Path| {
+            if let Err(e) = fs::remove_file(path)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::debug!(operation = "cleanup", error = %e, path = ?path, "[Storage] Failed to remove temporary file");
+            }
+        };
+
         // Check compatibility
         let is_compatible = probe_info.is_compatible_profile();
         let transcoded = if is_compatible {
-            println!(
-                "[Storage] Video is already compatible profile (H.264/yuv420p/{}x{}@{}fps). Bypassing transcode, copying directly to storage...",
-                probe_info.width, probe_info.height, probe_info.fps
+            tracing::info!(
+                operation = "cache_import",
+                container = probe_info.container_format.as_deref().unwrap_or("mp4"),
+                codec = %probe_info.codec,
+                width = probe_info.width,
+                height = probe_info.height,
+                fps = probe_info.fps,
+                "[Storage] Video is already compatible profile; bypassing transcode, copying directly to storage"
             );
             fs::copy(&canonical_source, &tmp_video_path).map_err(|e| {
-                let _ = fs::remove_file(&tmp_video_path);
+                cleanup_tmp(&tmp_video_path);
                 FluffyError::Cache(format!("Failed to copy compatible video to storage: {e}"))
             })?;
             false
         } else {
-            println!(
-                "[Storage] Video requires normalization (input: {}/{}x{}@{}fps). Transcoding to storage temporary {:?}",
-                probe_info.codec, probe_info.width, probe_info.height, probe_info.fps, tmp_video_path
+            tracing::info!(
+                operation = "cache_import",
+                container = ?probe_info.container_format,
+                codec = %probe_info.codec,
+                width = probe_info.width,
+                height = probe_info.height,
+                fps = probe_info.fps,
+                "[Storage] Video requires normalization; transcoding to temporary storage file"
             );
             if let Err(e) = transcode_video(&canonical_source, &tmp_video_path, &probe_info) {
-                let _ = fs::remove_file(&tmp_video_path);
+                cleanup_tmp(&tmp_video_path);
                 return Err(e);
             }
             true
@@ -216,7 +267,7 @@ impl CacheManager {
 
         // 5. Atomic rename to destination
         if let Err(e) = fs::rename(&tmp_video_path, &final_video_path) {
-            let _ = fs::remove_file(&tmp_video_path);
+            cleanup_tmp(&tmp_video_path);
             return Err(FluffyError::Cache(format!(
                 "Failed to atomically install storage video: {e}"
             )));
@@ -243,12 +294,23 @@ impl CacheManager {
         let tmp_meta_filename = format!(".tmp.{pid}.{now}.{hash}.json");
         let tmp_meta_path = self.metadata_dir.join(&tmp_meta_filename);
         let meta_json = serde_json::to_string_pretty(&metadata)?;
-        fs::write(&tmp_meta_path, meta_json)?;
-        let _ = fs::rename(&tmp_meta_path, &final_metadata_path);
+        if let Err(e) = fs::write(&tmp_meta_path, meta_json) {
+            cleanup_tmp(&final_video_path);
+            return Err(FluffyError::Cache(format!("Failed to write metadata: {e}")));
+        }
+        if let Err(e) = fs::rename(&tmp_meta_path, &final_metadata_path) {
+            cleanup_tmp(&tmp_meta_path);
+            cleanup_tmp(&final_video_path);
+            return Err(FluffyError::Cache(format!(
+                "Failed to atomically install metadata: {e}"
+            )));
+        }
 
-        println!(
-            "[Storage] Successfully stored video: {:?} (transcoded: {})",
-            final_video_path, transcoded
+        tracing::info!(
+            operation = "cache_install",
+            destination = ?final_video_path,
+            transcoded,
+            "[Storage] Successfully installed video and metadata to storage"
         );
 
         Ok(final_video_path)
@@ -353,6 +415,96 @@ mod tests {
         let meta: CacheMetadata = serde_json::from_str(&meta_content).unwrap();
         // Since test.mp4 is already compatible, transcoded must be false!
         assert!(!meta.transcoded);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_metadata_rename_failure_rolls_back_video() {
+        let temp_dir = std::env::temp_dir().join(format!("fluffy_meta_fail_test_{}", std::process::id()));
+        let manager = CacheManager::new(&temp_dir).expect("Failed to create cache manager");
+
+        let source = Path::new("test.mp4");
+        if !source.exists() {
+            return;
+        }
+
+        let hash = CacheManager::compute_source_hash(source).unwrap();
+        let final_meta_path = manager.metadata_dir().join(format!("{hash}.json"));
+        // Create a directory where the metadata file should be.
+        // In Linux/Unix, fs::rename of a regular file onto a directory path fails with EISDIR.
+        fs::create_dir_all(&final_meta_path).unwrap();
+
+        // import_video must fail due to metadata rename error
+        let res = manager.import_video(source);
+        assert!(res.is_err(), "Expected import_video to fail when metadata rename fails");
+
+        // Verify that the video file was cleaned up (rolled back) and not left in storage
+        let final_video_path = manager.objects_dir().join(format!("{hash}.mp4"));
+        assert!(
+            !final_video_path.exists(),
+            "Final video file must be rolled back if metadata installation fails"
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_cleanup_stale_temp_files() {
+        let temp_dir = std::env::temp_dir().join(format!("fluffy_clean_tmp_test_{}", std::process::id()));
+        let manager = CacheManager::new(&temp_dir).expect("Failed to create cache manager");
+
+        let stale_vid = manager.videos_dir().join(".tmp.9999.12345.dummy.mp4");
+        let stale_meta = manager.metadata_dir().join(".tmp.9999.12345.dummy.json");
+        let permanent_vid = manager.videos_dir().join("permanent.mp4");
+
+        fs::write(&stale_vid, b"stale video").unwrap();
+        fs::write(&stale_meta, b"stale meta").unwrap();
+        fs::write(&permanent_vid, b"keep this").unwrap();
+
+        assert!(stale_vid.exists());
+        assert!(stale_meta.exists());
+        assert!(permanent_vid.exists());
+
+        let cleaned = manager.cleanup_stale_temp_files().unwrap();
+        assert_eq!(cleaned, 2);
+
+        assert!(!stale_vid.exists());
+        assert!(!stale_meta.exists());
+        assert!(permanent_vid.exists());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_cache_already_exists_bypasses_work() {
+        let temp_dir = std::env::temp_dir().join(format!("fluffy_cache_hit_test_{}", std::process::id()));
+        let manager = CacheManager::new(&temp_dir).expect("Failed to create cache manager");
+
+        let source = Path::new("test.mp4");
+        if !source.exists() {
+            return;
+        }
+
+        // 1. Initial import
+        let p1 = manager.import_video(source).unwrap();
+        assert!(p1.exists());
+
+        let hash = p1.file_stem().unwrap().to_str().unwrap();
+        let meta_path = manager.metadata_dir().join(format!("{hash}.json"));
+        assert!(meta_path.exists());
+
+        // 2. Second import for identical content -> must immediately return existing path
+        let p2 = manager.import_video(source).unwrap();
+        assert_eq!(p1, p2);
+
+        // 3. Cache integrity check: if metadata is missing, it must NOT be considered a cache hit
+        fs::remove_file(&meta_path).unwrap();
+        assert!(!meta_path.exists());
+        // Now re-import should recognize incomplete cache and recreate metadata
+        let p3 = manager.import_video(source).unwrap();
+        assert_eq!(p1, p3);
+        assert!(meta_path.exists(), "Metadata must be restored");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

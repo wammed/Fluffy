@@ -6,12 +6,13 @@ use cosmic::iced::{Alignment, Length, Size};
 use cosmic::widget::{button, text_input};
 use cosmic::{Application, Element};
 
-use fluffy::ipc::{default_socket_path, IpcClient, OutputStatus};
-
+use std::time::Duration;
+use fluffy::ipc::{default_socket_path, DaemonStatus, IpcClient, OutputStatus};
 
 #[derive(Debug, Clone)]
 pub enum Message {
     RefreshStatus,
+    StatusFetched(Result<DaemonStatus, String>),
     StartDaemon,
     DaemonStarted(Result<(), String>),
     SelectOutput(Option<String>), // None = All outputs
@@ -20,14 +21,22 @@ pub enum Message {
     ApplyWallpaper,
     WallpaperApplied(Result<(), String>),
     TickSpinner,
+    TickPoll,
     Pause,
     Resume,
     Stop,
+    PlaybackControlCompleted(Result<String, String>),
     DismissMessage,
 }
 
-const ARROW_FRAMES: &[&str] = &["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"];
+#[derive(Debug, Clone, Copy)]
+enum PlaybackControlAction {
+    Pause,
+    Resume,
+    Stop,
+}
 
+const ARROW_FRAMES: &[&str] = &["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"];
 
 const FLUFFY_ICON_SVG: &[u8] = include_bytes!("../../images/fluffy-icon.svg");
 
@@ -45,12 +54,12 @@ fn find_fluffy_executable() -> Result<PathBuf, String> {
     }
 
     // 2. Check sibling in same directory as current executable
-    if let Ok(current_exe) = std::env::current_exe() {
-        if let Some(parent) = current_exe.parent() {
-            let sibling = parent.join("fluffy");
-            if sibling.is_file() {
-                return Ok(sibling);
-            }
+    if let Ok(current_exe) = std::env::current_exe()
+        && let Some(parent) = current_exe.parent()
+    {
+        let sibling = parent.join("fluffy");
+        if sibling.is_file() {
+            return Ok(sibling);
         }
     }
 
@@ -68,7 +77,7 @@ fn find_fluffy_executable() -> Result<PathBuf, String> {
 }
 
 fn wait_for_daemon_ready(socket_path: &Path, max_attempts: usize) -> bool {
-    let client = IpcClient::new(socket_path);
+    let client = IpcClient::with_timeout(socket_path, Duration::from_millis(500));
     for _ in 0..max_attempts {
         std::thread::sleep(std::time::Duration::from_millis(100));
         if client.status().is_ok() {
@@ -83,10 +92,10 @@ fn launch_daemon(socket_path: &Path) -> Result<(), String> {
     if let Ok(output) = std::process::Command::new("systemctl")
         .args(["--user", "start", "fluffy.service"])
         .output()
+        && output.status.success()
+        && wait_for_daemon_ready(socket_path, 25)
     {
-        if output.status.success() && wait_for_daemon_ready(socket_path, 25) {
-            return Ok(());
-        }
+        return Ok(());
     }
 
     // 2. Fallback: direct process spawn (detached from GUI process group)
@@ -113,6 +122,64 @@ fn launch_daemon(socket_path: &Path) -> Result<(), String> {
     }
 }
 
+/// Classifies raw error strings into structured, user-friendly failure categories:
+/// - connection unavailable
+/// - timeout
+/// - daemon stopped
+/// - invalid response
+fn classify_daemon_error(err: &str) -> &'static str {
+    let lower = err.to_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        "timeout"
+    } else if lower.contains("no such file") || lower.contains("connection refused") || lower.contains("broken pipe") {
+        "daemon stopped"
+    } else if lower.contains("invalid response") || lower.contains("malformed") || lower.contains("failed to parse") {
+        "invalid response"
+    } else {
+        "connection unavailable"
+    }
+}
+
+fn async_fetch_status(socket_path: PathBuf) -> Task<Message> {
+    cosmic::app::Task::future(async move {
+        let res = tokio::task::spawn_blocking(move || {
+            let client = IpcClient::with_timeout(&socket_path, Duration::from_millis(1500));
+            client.status().map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("Task execution failed: {e}")));
+
+        cosmic::Action::App(Message::StatusFetched(res))
+    })
+}
+
+fn async_playback_control(
+    socket_path: PathBuf,
+    action: PlaybackControlAction,
+    output: Option<String>,
+) -> Task<Message> {
+    cosmic::app::Task::future(async move {
+        let label = match action {
+            PlaybackControlAction::Pause => "paused",
+            PlaybackControlAction::Resume => "resumed",
+            PlaybackControlAction::Stop => "stopped",
+        };
+        let res = tokio::task::spawn_blocking(move || {
+            let client = IpcClient::with_timeout(&socket_path, Duration::from_secs(3));
+            let r = match action {
+                PlaybackControlAction::Pause => client.pause(output.as_deref()),
+                PlaybackControlAction::Resume => client.resume(output.as_deref()),
+                PlaybackControlAction::Stop => client.stop(output.as_deref()),
+            };
+            r.map(|_| label.to_string()).map_err(|e| e.to_string())
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("Task execution failed: {e}")));
+
+        cosmic::Action::App(Message::PlaybackControlCompleted(res))
+    })
+}
+
 struct FluffySettingsApp {
     core: Core,
     socket_path: PathBuf,
@@ -126,34 +193,7 @@ struct FluffySettingsApp {
     is_converting: bool,
     converting_file: Option<String>,
     spinner_index: usize,
-}
-
-impl FluffySettingsApp {
-    fn fetch_status(&mut self) {
-        let client = IpcClient::new(&self.socket_path);
-        match client.status() {
-            Ok(status) => {
-                self.daemon_online = true;
-                self.outputs = status.outputs;
-                if status.is_converting {
-                    self.is_converting = true;
-                    if self.converting_file.is_none() {
-                        self.converting_file = status.converting_file;
-                    }
-                } else if self.converting_file.is_none() {
-                    self.is_converting = false;
-                }
-            }
-            Err(err) => {
-                self.daemon_online = false;
-                self.outputs.clear();
-                self.status_message = Some((
-                    format!("Daemon offline or unreachable: {err}"),
-                    true,
-                ));
-            }
-        }
-    }
+    is_fetching_status: bool,
 }
 
 impl Application for FluffySettingsApp {
@@ -175,19 +215,34 @@ impl Application for FluffySettingsApp {
     }
 
     fn subscription(&self) -> cosmic::iced::Subscription<Self::Message> {
+        let mut subs = Vec::new();
+
         if self.is_converting {
-            cosmic::iced::time::every(std::time::Duration::from_millis(150))
-                .map(|_| Message::TickSpinner)
-        } else {
-            cosmic::iced::Subscription::none()
+            subs.push(
+                cosmic::iced::time::every(std::time::Duration::from_millis(150))
+                    .map(|_| Message::TickSpinner),
+            );
         }
+
+        // Periodic background status polling (every 1s if converting, every 3s if idle)
+        let poll_interval = if self.is_converting {
+            std::time::Duration::from_millis(1000)
+        } else {
+            std::time::Duration::from_secs(3)
+        };
+        subs.push(
+            cosmic::iced::time::every(poll_interval)
+                .map(|_| Message::TickPoll),
+        );
+
+        cosmic::iced::Subscription::batch(subs)
     }
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
         let socket_path = default_socket_path();
         let mut app = Self {
             core,
-            socket_path,
+            socket_path: socket_path.clone(),
             daemon_online: false,
             starting_daemon: false,
             outputs: Vec::new(),
@@ -198,20 +253,59 @@ impl Application for FluffySettingsApp {
             is_converting: false,
             converting_file: None,
             spinner_index: 0,
+            is_fetching_status: true,
         };
 
         app.core.set_header_title("Fluffy Wallpaper Settings".to_string());
-        app.fetch_status();
-        (app, Task::none())
+        let task = async_fetch_status(socket_path);
+        (app, task)
     }
-
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
             Message::RefreshStatus => {
-                self.fetch_status();
-                if self.daemon_online {
-                    self.status_message = Some(("Daemon status updated".to_string(), false));
+                if !self.is_fetching_status {
+                    self.is_fetching_status = true;
+                    async_fetch_status(self.socket_path.clone())
+                } else {
+                    Task::none()
+                }
+            }
+
+            Message::TickPoll => {
+                if !self.is_fetching_status {
+                    self.is_fetching_status = true;
+                    async_fetch_status(self.socket_path.clone())
+                } else {
+                    Task::none()
+                }
+            }
+
+            Message::StatusFetched(result) => {
+                self.is_fetching_status = false;
+                match result {
+                    Ok(status) => {
+                        self.daemon_online = true;
+                        self.outputs = status.outputs;
+                        if status.is_converting {
+                            self.is_converting = true;
+                            if self.converting_file.is_none() {
+                                self.converting_file = status.converting_file;
+                            }
+                        } else if self.converting_file.is_none() {
+                            self.is_converting = false;
+                        }
+                    }
+                    Err(err) => {
+                        self.daemon_online = false;
+                        self.outputs.clear();
+                        self.is_converting = false;
+                        let category = classify_daemon_error(&err);
+                        self.status_message = Some((
+                            format!("Daemon status error ({category}): {err}"),
+                            true,
+                        ));
+                    }
                 }
                 Task::none()
             }
@@ -236,14 +330,15 @@ impl Application for FluffySettingsApp {
                 self.starting_daemon = false;
                 match result {
                     Ok(_) => {
-                        self.fetch_status();
                         self.status_message = Some(("Daemon successfully started and ready!".to_string(), false));
+                        self.is_fetching_status = true;
+                        async_fetch_status(self.socket_path.clone())
                     }
                     Err(err) => {
                         self.status_message = Some((format!("Failed to start daemon: {err}"), true));
+                        Task::none()
                     }
                 }
-                Task::none()
             }
 
             Message::SelectOutput(out) => {
@@ -292,7 +387,7 @@ impl Application for FluffySettingsApp {
                 // Non-blocking asynchronous task: sends set-video over IPC to daemon
                 cosmic::app::Task::future(async move {
                     let res = tokio::task::spawn_blocking(move || {
-                        let client = IpcClient::new(&socket);
+                        let client = IpcClient::with_timeout(&socket, Duration::from_secs(60));
                         client.set_video(&file_path, output.as_deref(), None)
                             .map_err(|e| e.to_string())
                     })
@@ -309,44 +404,58 @@ impl Application for FluffySettingsApp {
                 match result {
                     Ok(_) => {
                         self.status_message = Some(("Wallpaper successfully applied!".to_string(), false));
-                        self.fetch_status();
+                        self.is_fetching_status = true;
+                        async_fetch_status(self.socket_path.clone())
                     }
                     Err(e) => {
-                        self.status_message = Some((format!("Failed to apply wallpaper: {e}"), true));
+                        let category = classify_daemon_error(&e);
+                        self.status_message = Some((format!("Failed to apply wallpaper ({category}): {e}"), true));
+                        Task::none()
                     }
                 }
-                Task::none()
             }
 
             Message::TickSpinner => {
                 self.spinner_index = self.spinner_index.wrapping_add(1);
-                // Also periodically poll status to stay in sync with daemon
-                if self.spinner_index % 8 == 0 {
-                    self.fetch_status();
-                }
                 Task::none()
             }
 
-
             Message::Pause => {
-                let client = IpcClient::new(&self.socket_path);
-                let _ = client.pause(self.selected_output.as_deref());
-                self.fetch_status();
-                Task::none()
+                async_playback_control(
+                    self.socket_path.clone(),
+                    PlaybackControlAction::Pause,
+                    self.selected_output.clone(),
+                )
             }
 
             Message::Resume => {
-                let client = IpcClient::new(&self.socket_path);
-                let _ = client.resume(self.selected_output.as_deref());
-                self.fetch_status();
-                Task::none()
+                async_playback_control(
+                    self.socket_path.clone(),
+                    PlaybackControlAction::Resume,
+                    self.selected_output.clone(),
+                )
             }
 
             Message::Stop => {
-                let client = IpcClient::new(&self.socket_path);
-                let _ = client.stop(self.selected_output.as_deref());
-                self.fetch_status();
-                Task::none()
+                async_playback_control(
+                    self.socket_path.clone(),
+                    PlaybackControlAction::Stop,
+                    self.selected_output.clone(),
+                )
+            }
+
+            Message::PlaybackControlCompleted(result) => {
+                match result {
+                    Ok(action) => {
+                        self.status_message = Some((format!("Playback {action}"), false));
+                    }
+                    Err(e) => {
+                        let category = classify_daemon_error(&e);
+                        self.status_message = Some((format!("Playback command failed ({category}): {e}"), true));
+                    }
+                }
+                self.is_fetching_status = true;
+                async_fetch_status(self.socket_path.clone())
             }
 
             Message::DismissMessage => {
@@ -425,7 +534,12 @@ impl Application for FluffySettingsApp {
 
         for out in &self.outputs {
             let is_sel = self.selected_output.as_deref() == Some(&out.name);
-            let label = format!("{}: {}", out.name, out.state);
+            let geom_str = if out.width > 0 && out.height > 0 {
+                format!(" ({}x{})", out.width, out.height)
+            } else {
+                String::new()
+            };
+            let label = format!("{}{}: {}", out.name, geom_str, out.state);
             let btn = if is_sel {
                 button::suggested(label)
             } else {

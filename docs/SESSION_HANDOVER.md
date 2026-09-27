@@ -35,10 +35,10 @@ Wallpaper daemon (resident, minimal CPU/RAM overhead)
       |
       +-- Unix domain socket IPC ($XDG_RUNTIME_DIR/fluffy.sock)
       |
-      +-- Cache & Import Subsystem (~/.cache/fluffy/)
+      +-- Storage & Import Subsystem (~/.local/share/fluffy/storage/)
       |     +-- ffprobe 4K validation
       |     +-- ffmpeg H.264/yuv420p/30fps normalization
-      |     +-- SHA-256 atomic caching & instant reuse
+      |     +-- SHA-256 atomic storage & instant reuse
       |
       +-- Multi-output Manager
             ├── ManagedOutput [DP-1] (LayerSurface + GstVideoPlayer + Gen)
@@ -68,7 +68,7 @@ Per project documentation standards, items are tracked by five clear verificatio
 - [x] **Layer surface mapping**: Verified `zwlr_layer_surface_v1` on `Layer::Bottom` covering target output.
 - [x] **Subsurface visibility**: Verified parent layer surface must attach an initial base buffer (`Argb8888`) so that GStreamer subsurface becomes visible to compositor.
 - [x] **Explicit render rectangle**: Verified `overlay.set_render_rectangle(0, 0, w, h)` is required for external surface binding.
-- [x] **Hardware decoding**: Verified automatic `nvh264dec` hardware acceleration under GStreamer `playbin`.
+- [x] **Hardware decoding**: Hardware decoding is preferred and auto-detected depending on the GStreamer environment; verified with automatic `nvh264dec` hardware acceleration on test rig (NVIDIA GeForce RTX 3080). Software decoding (`avdec_h264`) serves as documented fallback.
 
 #### Phase 2: Playback Core [COMPLETE]
 - [x] **Codebase modularization**: Clean architecture under `src/error.rs`, `src/wayland/`, `src/playback/`.
@@ -110,15 +110,15 @@ Per project documentation standards, items are tracked by five clear verificatio
   - Transcoding to standard playback profile: H.264 (`libx264`), `yuv420p`, 30 fps, no audio (`-an`), no subtitles (`-sn`), even dimensions (`normalize_even_dimensions`).
   - Executed directly with argument arrays (no shell interpolation).
   - Immediate cleanup of temporary files on conversion failure.
-- [x] **Atomic Cache Management (`src/cache/manager.rs`)**:
-  - Cache storage under `~/.cache/fluffy/objects/<sha256>.mp4` and `metadata/<sha256>.json`.
+- [x] **Atomic Storage Management (`src/cache/manager.rs`)**:
+  - Storage under `~/.local/share/fluffy/storage/videos/<sha256>.mp4` and `metadata/<sha256>.json`.
   - Atomic installation via unique temporary filenames (`.tmp.<pid>.<timestamp>.<hash>.mp4`) and `fs::rename`.
   - Content SHA-256 hash calculation verified on real files.
-  - Cache hit reuse verified: Second import of `test.mp4` completes in <10ms by detecting existing object and metadata without re-encoding.
+  - Storage hit reuse verified: Second import of `test.mp4` completes in <10ms by detecting existing video and metadata without re-encoding.
 - [x] **Daemon & CLI Integration**:
-  - `fluffy import <path>` subcommand available for pre-importing videos into cache.
+  - `fluffy import <path>` subcommand available for pre-importing videos into storage.
   - `fluffy set-video <path>` in daemon automatically validates and normalizes video via `CacheManager` before triggering playback.
-  - Tested on live daemon over IPC: `[Cache] Cache hit -> reusing ...` log confirmed on real hardware.
+  - Tested on live daemon over IPC: `[Storage] Storage hit -> reusing ...` log confirmed on real hardware.
 
 #### Phase 5: Multi-output Management [COMPLETE]
 - [x] **`OutputManager` architecture (`src/daemon/output_manager.rs`)**:
@@ -144,10 +144,10 @@ Per project documentation standards, items are tracked by five clear verificatio
   - Dual daemon launch prevention verified on hardware: second daemon safely aborted with `Error: Ipc("Another Fluffy daemon instance is already running at \"/run/user/1000/fluffy.sock\"")`.
 - [x] **Target display selector (Real-hardware-tested)**:
   - Selectable "All Displays (Global)" vs. specific detected monitors (`DP-1`, `DP-2`).
-- [x] **Native file picker & cache normalization (Real-hardware-tested)**:
+- [x] **Native file picker & normalization (Real-hardware-tested)**:
   - Integrated `rfd::FileDialog` for native Wayland file picking (`*.mp4`, `*.webm`, `*.mkv`, `*.mov`).
-  - Asynchronous background task imports and normalizes video via `CacheManager::import_video()` (verified: H.264/yuv420p/30fps transcode to `~/.cache/fluffy/objects/`).
-  - Cache hit verified: Subsequent selection reuses cached normalization instantly (`Cache hit -> reusing ...`).
+  - Asynchronous background task imports and normalizes video via `CacheManager::import_video()` (verified: H.264/yuv420p/30fps transcode to `~/.local/share/fluffy/storage/videos/`).
+  - Storage hit verified: Subsequent selection reuses storage normalization instantly (`Storage hit -> reusing ...`).
 - [x] **IPC command triggers on real hardware (Real-hardware-tested)**:
   - `Apply Video Wallpaper` (Global): Both `DP-1` and `DP-2` simultaneously updated to `8a9a7c...mp4`.
   - `Apply Video Wallpaper` (Per-output): `DP-2` updated to `597799...mp4` while `DP-1` continued playing undisturbed (loop #10, #11, ...).
@@ -185,27 +185,31 @@ Per project documentation standards, items are tracked by five clear verificatio
   - Settings GUI release binary: **30 MB**.
 
 ### 2.2 Future Polish Items (Non-blocking / Backlog)
-1. **Fractional scaling** under COSMIC (compositor auto-scales integer buffers cleanly).
-2. **Dynamic surface scaling via `wp_viewporter`** (future protocol enhancement).
+1. **Direct client binding of `wp_viewporter`** (currently handled internally by `waylandsink` and layer-shell 4-edge anchors).
+2. **Fractional scaling** fine-tuning under COSMIC compositors.
+3. **Ultrawide / mixed aspect ratio cropping policies**.
 
 ------------------------------------------------------------------------
 
-## 3. Most Important Next Task: Phase 7 (Hardening, systemd & Benchmarks)
+## 3. Post-Review Hardening Deliverables (P1, P2, P3 Complete)
 
-### Goal:
-Prepare Fluffy for production-ready desktop integration with a systemd user service unit, automated autostart, error recovery, structured logging, and thorough resource benchmarks.
+Following external technical reviews, the following architectural hardening items have been implemented, verified, and integrated into the core codebase:
 
-### Phase 7 Action Items:
-1. **systemd `--user` Service Unit**:
-   - Provide `fluffy.service` under `~/.config/systemd/user/`.
-   - Configure socket activation or dependency on `graphical-session.target`.
-   - Ensure clean restart and termination behaviors.
-2. **Logging & Journal Integration**:
-   - Structured logging via `tracing` or `env_logger` routed cleanly to `journald` when running under systemd.
-3. **Performance Benchmark Suite**:
-   - Measure CPU usage %, Resident Set Size (RSS MB), and NVIDIA GPU Decoder utilization (`nvtop` / `nvidia-smi`) during multi-monitor 1440p/4K playback.
-4. **Desktop Entry & Packaging**:
-   - Create `com.github.fluffy.desktop` for `fluffy-settings` in the COSMIC Application Library.
+### 3.1 P1 Hardening: Reliability & Race-Condition Prevention
+- **Container Format Validation**: `ffprobe` probes `format_name` in addition to stream codec. Only true MP4 containers (`mp4`/`mov`) bypass transcoding; MKV, WebM, and other containers are normalized to standard MP4 even if the underlying stream is H.264, preventing mislabeled non-MP4 files in storage.
+- **Request Generation Monotonic Reservation**: Generation IDs are reserved immediately at the moment `set-video` arrives at the daemon controller (`self.generation += 1`), not when transcoding finishes. If a newer request arrives while a transcode is running, the finished transcode is detected as stale (`job_gen < current_gen`) and cleanly discarded without clobbering newer playback.
+- **systemd Absolute Path**: `fluffy.service` uses `ExecStart=%h/.local/bin/fluffy daemon`, ensuring reliable startup under `systemd --user` regardless of session `PATH` variations.
+
+### 3.2 P2 Hardening: Multi-Job Tracking & Dynamic Output Geometry
+- **JobManager with 8-State Lifecycle**: Replaced single-job status with `HashMap<JobId, TranscodeJob>` tracking 8 distinct states: `Queued`, `Probing`, `Transcoding`, `Installing`, `Completed`, `Failed`, `Cancelled`, `Stale`. Multiple concurrent conversions no longer clobber daemon status.
+- **Dynamic OutputGeometry Tracking**: `OutputManager` captures logical dimensions, scale factor, and position from `wl_output` events (`update_output`), dynamically resizing surfaces and viewport rectangles (`overlay.set_render_rectangle`) upon resolution or scale changes.
+
+### 3.3 P3 Hardening: Concurrency Optimization & Best-Effort Semantics
+- **In-Flight Deduplication**: Duplicate or concurrent `set-video` requests for identical content hashes reuse active background transcode jobs rather than spawning redundant `ffmpeg`/`ffprobe` processes.
+- **Best-Effort All-Output Semantics**: Multi-display video updates apply on a best-effort basis; partial failures (e.g. DP-1 succeeds, DP-2 fails) are reported per-output via `SetVideoResult` (`outputs: Vec<OutputApplyResult>`), avoiding fragile full-pipeline rollbacks.
+- **Fully Async Settings GUI IPC**: `fluffy-settings` runs all IPC queries and commands through asynchronous tasks (`iced::Task`), keeping the user interface completely fluid and non-blocking under all conditions.
+
+------------------------------------------------------------------------
 
 ## 4. Key Architectural Decisions Established
 
@@ -228,9 +232,9 @@ Prepare Fluffy for production-ready desktop integration with a systemd user serv
 - Normalization produces consistent H.264 / `yuv420p` / 30fps / no-audio / even dimensions.
 - SHA-256 content addressing guarantees zero redundant transcoding overhead.
 
-### 4.5 Concurrent Multi-Output Independence
+### 4.5 Concurrent Multi-Output Independence & Best-Effort Semantics
 - Each physical monitor receives its own dedicated layer-shell surface and its own GStreamer playback pipeline (`1 output = 1 surface = 1 pipeline`).
-- Operations on one output do not block, interrupt, or tear down playback on another output.
+- Operations on one output do not block, interrupt, or tear down playback on another output. All-output updates apply best-effort per monitor.
 
 ------------------------------------------------------------------------
 
@@ -287,6 +291,7 @@ Fluffy/
 - [x] Surface disappears cleanly and restores wallpaper (Real-hardware-tested)
 - [x] Multi-monitor concurrent surfaces (`DP-1` + `DP-2`) (Real-hardware-tested)
 - [x] Output removal / hotplug dynamic handling (Real-hardware-tested)
+- [x] Dynamic OutputGeometry tracking and surface update on resolution/scale change (Unit-tested & Real-hardware-tested)
 
 ### GStreamer Playback Core
 - [x] H.264 playback via hardware decoder (`nvh264dec`) (Real-hardware-tested)
@@ -305,15 +310,23 @@ Fluffy/
 - [x] `set-video` command (global and per-output) (Real-hardware-tested)
 - [x] `pause` / `resume` / `stop` / `reload` commands (global and per-output) (Real-hardware-tested)
 - [x] Generation semantics & stale request rejection (Unit-tested & Real-hardware-tested)
+- [x] Monotonic generation reservation at request arrival time (Unit-tested)
+- [x] JobManager 8-state lifecycle management (Unit-tested)
+- [x] In-flight transcode deduplication by content hash (Unit-tested)
+- [x] Per-subscriber target output & generation separation in deduplicated jobs (`JobSubscriber`) (Unit-tested)
+- [x] Non-blocking off-main-thread SHA-256 computation to preserve Wayland dispatch latency (Unit-tested & Real-hardware-tested)
+- [x] Best-effort multi-output status reporting (`SetVideoResult`) (Unit-tested)
 - [x] Timeout-safe client execution (Integration-tested & Real-hardware-tested)
 
 ### Cache & Import (Phase 4 COMPLETE)
 - [x] `ffprobe` stream & codec inspection (Integration-tested & Real-hardware-tested)
+- [x] Container format validation (MP4 bypass vs MKV/WebM normalization) (Unit-tested)
 - [x] 4K resolution limit rejection (`5120x1440` rejected immediately) (Unit-tested & Real-hardware-tested)
 - [x] Odd-dimension normalization (`normalize_even_dimensions`) (Unit-tested)
 - [x] `ffmpeg` normalization to H.264/yuv420p/30fps/even dimensions (Integration-tested & Real-hardware-tested)
 - [x] Atomic file write via temporary file rename (Integration-tested & Real-hardware-tested)
 - [x] Cache metadata tracking and SHA-256 reuse (Integration-tested & Real-hardware-tested)
+- [x] Dual storage integrity & rollback on metadata failure (Unit-tested)
 - [x] Transcoding failure cleanup (Integration-tested)
 
 ### Settings GUI (Phase 6 COMPLETE)
@@ -321,6 +334,7 @@ Fluffy/
 - [x] Resident daemon zero-overhead isolation (daemon binary unbloated) (Compiled & Real-hardware-tested)
 - [x] COSMIC UI theme & layout (`libcosmic` Application) (Compiled & Real-hardware-tested)
 - [x] Asynchronous daemon status subscription & query (Compiled & Real-hardware-tested)
+- [x] Fully async IPC command execution via `iced::Task` (Compiled & Real-hardware-tested)
 - [x] Native Wayland file picker integration (`rfd`) (Compiled & Real-hardware-tested)
 - [x] Display selector (`All Displays`, `DP-1`, `DP-2`) (Compiled & Real-hardware-tested)
 - [x] IPC triggers (`set-video`, `pause`, `resume`, `stop`) (Compiled & Real-hardware-tested)
@@ -328,16 +342,19 @@ Fluffy/
 
 ### Hardening & Desktop Integration (Phase 7 COMPLETE)
 - [x] systemd `--user` service unit with `graphical-session.target` binding (`data/systemd/fluffy.service`) (Compiled & Tested)
+- [x] Absolute path `%h/.local/bin/fluffy` in `fluffy.service` (Tested)
 - [x] Desktop Entry for COSMIC Application Library (`data/desktop/com.github.fluffy.Fluffy.desktop`) (Tested)
-- [x] Structured logging (`tracing` + `tracing-subscriber`) with journald support (Real-hardware-tested)
+- [x] Structured logging (`tracing` + `tracing-subscriber`) with journald support across daemon, IPC, playback, cache, and Wayland (Real-hardware-tested)
+- [x] Unified diagnostics & error handling: zero raw `println!` in resident daemon/subsystems, robust propagation, and categorized UI error display (Unit-tested & Real-hardware-tested)
 - [x] Dynamic display hotplug (attach & detach event handling) (Real-hardware-tested)
 - [x] Robust CLI argument parser supporting options anywhere (Unit-tested & Real-hardware-tested)
 - [x] Systematic performance benchmarks (Idle, 1080p, 1440p, 4K across dual displays) (Real-hardware-tested)
 - [x] Automated integration installer (`scripts/install-desktop-integration.sh`) (Tested)
 
-### Viewporter / Scaling
-- [ ] Dynamic destination scaling via `wp_viewporter`
-- [ ] Ultrawide / mixed aspect ratio cropping policies
+### Surface Scaling & Wayland Protocols (Status)
+- [x] Surface scaling via 4-edge anchors & waylandsink render rectangle (Real-hardware-tested)
+- [ ] Direct client binding of `wp_viewporter` protocol extension (Unimplemented / Backlog)
+- [ ] Ultrawide / mixed aspect ratio cropping policies (Unimplemented / Backlog)
 
 ------------------------------------------------------------------------
 

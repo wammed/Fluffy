@@ -29,14 +29,14 @@
 ## 🌟 Highlights
 
 - **Non-Destructive Coexistence (`Layer::Bottom`)**: Fluffy never modifies or kills `cosmic-bg`. It paints as an overlay on `Layer::Bottom`, below docks, panels, and windows. If Fluffy stops, your original COSMIC desktop background instantly reappears without desktop disruption.
-- **Zero-Flicker Seamless Switching**: Features dual-pipeline pre-roll architecture. Transitions between loop videos render seamlessly with zero black frames, flashing, or compositor resizes.
-- **Hardware-Accelerated Decoding**: Automatically offloads video playback to GPU ASICs (e.g. NVIDIA NVDEC via `nvh264dec` / VA-API), ensuring virtually 0% CPU consumption during idle state and minimal power draw.
+- **Zero-Flicker Seamless Switching**: Features dual-pipeline pre-roll architecture. Transitions between loop videos render seamlessly with zero black frames, flashing, or compositor resizes (verified on physical testbed).
+- **Hardware-Accelerated Decoding (Preferred & Auto-Detected)**: Hardware decode is preferred; the actual decoder depends on the GStreamer environment and installed drivers. Verified with NVDEC (`nvh264dec`) on the project testbed (NVIDIA GeForce RTX 3080), maintaining minimal CPU utilization and heat, with transparent software fallback (`avdec_h264`).
 - **Architectural Isolation (Daemon vs. GUI)**:
   - **Resident Daemon (`fluffy`)**: Micro-footprint of only **3.2 MB** binary size and **40 MB RSS** RAM at idle.
   - **Settings GUI (`fluffy-settings`)**: Ephemeral client built with `libcosmic` that connects over Unix domain socket IPC and exits immediately when done, leaving the daemon completely unbloated.
-- **Deterministic 4K Normalization & Atomic Caching**: Validates arbitrary video files via `ffprobe` (strictly enforcing 4K boundaries) and transcodes to standard H.264/30fps profiles with SHA-256 content addressing in `~/.cache/fluffy/`.
-- **Dynamic Display Hotplug**: Automatically detects monitor connections and disconnections in real-time, assigning wallpapers without daemon restarts.
-- **systemd `--user` Integration**: Fully integrated into `graphical-session.target` with automated crash recovery (`Restart=on-failure`).
+- **Deterministic 4K Normalization & Atomic Storage**: Validates arbitrary video files via `ffprobe` (strictly enforcing container format and 4K boundaries) and transcodes to standard H.264/30fps profiles with SHA-256 content addressing in `~/.local/share/fluffy/storage/`.
+- **Dynamic Display Hotplug & Geometry Tracking**: Automatically detects monitor connections, disconnections, and resolution/scale changes in real-time, assigning wallpapers without daemon restarts.
+- **systemd `--user` Integration**: Fully integrated into `graphical-session.target` with absolute binary pathing (`%h/.local/bin/fluffy`) and automated crash recovery (`Restart=on-failure`).
 
 ---
 
@@ -172,7 +172,7 @@ Video files satisfying the standard profile completely **bypass transcoding** an
 
 | Property | Compliant Standard | Description |
 | :--- | :--- | :--- |
-| **Container** | MP4 (`.mp4`) | Standard MP4 container |
+| **Container** | MP4 (`.mp4`, format containing `mp4` or `mov`) | Native MP4 container (MKV/WebM files, even if containing H.264 streams, are normalized to genuine MP4) |
 | **Video Codec** | H.264 / AVC (`h264`, `avc1`) | Maximum decoding efficiency across all GPUs and CPUs |
 | **Pixel Format** | `yuv420p` | Widely compatible 8-bit YUV |
 | **Resolution** | Even width & height, up to 4K (3840×2160) | Odd pixel dimensions cause Wayland / GStreamer rendering bugs |
@@ -181,9 +181,10 @@ Video files satisfying the standard profile completely **bypass transcoding** an
 
 ### 2. Automatic Normalization for Non-Compliant Videos
 Non-compliant videos (e.g. HEVC/H.265, AV1, VP9, 60fps+, odd dimensions, MKV, WebM) are fully supported via automatic background normalization:
-- **First-run Background Transcode**: On initial selection, a background worker thread normalizes the video to the standard profile (H.264/yuv420p/30fps).
+- **First-run Background Transcode**: On initial selection, a background worker thread managed by `JobManager` normalizes the video to the standard profile (H.264/yuv420p/30fps).
   - **High CPU Notice**: Initial transcoding requires CPU rendering power, temporarily increasing CPU usage and fan speed.
   - **Zero Black Screen Guarantee**: Transcoding is completely non-blocking; the daemon's event loop and ongoing wallpaper playback keep running smoothly, meaning **no black screen occurs while waiting**.
+  - **Concurrency & Race Protection**: Request generations are monotonically reserved at arrival time to prevent stale conversions from clobbering newer requests. Identical in-flight conversions are automatically deduplicated.
 - **Instant Playback Thereafter**: Once normalized, the video is saved in persistent storage; subsequent playback skips transcoding and starts instantly.
 
 ### 3. Persistent Storage Directory (`~/.local/share/fluffy/storage`)
@@ -208,7 +209,7 @@ User / Autostart / Settings GUI / CLI
 ┌─────────────────────────────────────────────────────────────────┐
 │ Wallpaper Daemon (Resident Process: ~3.2 MB binary, ~40 MB RSS) │
 │                                                                 │
-│  ├─ Cache & Normalization Subsystem (~/.cache/fluffy/)          │
+│  ├─ Storage & Normalization Subsystem (~/.local/share/fluffy/storage/) │
 │  │   ├─ ffprobe validation (4K resolution boundary check)       │
 │  │   ├─ ffmpeg transcoding (H.264 / yuv420p / 30fps / no audio) │
 │  │   └─ SHA-256 atomic caching & deduplication                  │

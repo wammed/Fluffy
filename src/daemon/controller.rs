@@ -21,13 +21,13 @@ use crate::{
     playback::VideoPlayer,
     wayland::{WaylandContext, WaylandOutputEvent},
 };
-use super::output_manager::OutputManager;
+use super::{
+    job_manager::{JobId, JobManager},
+    output_manager::OutputManager,
+};
 
 struct TranscodeJobResult {
-    request_id: u64,
-    client_id: Option<ClientId>,
-    target_output: Option<String>,
-    generation: Option<u64>,
+    job_id: JobId,
     result: Result<std::path::PathBuf>,
 }
 
@@ -40,7 +40,7 @@ pub struct WallpaperDaemon {
     pub requested_output: Option<String>,
     transcode_tx: mpsc::Sender<TranscodeJobResult>,
     transcode_rx: mpsc::Receiver<TranscodeJobResult>,
-    pub current_converting: Option<String>,
+    pub job_manager: JobManager,
 }
 
 impl WallpaperDaemon {
@@ -51,6 +51,13 @@ impl WallpaperDaemon {
         requested_output: Option<&str>,
         exit_flag: Arc<AtomicBool>,
     ) -> Result<Self> {
+        tracing::info!(
+            version = env!("CARGO_PKG_VERSION"),
+            socket = ?socket_path.as_ref(),
+            requested_output = ?requested_output,
+            "[Daemon] Initializing Fluffy wallpaper daemon..."
+        );
+
         let cache = CacheManager::new(CacheManager::default_storage_dir())?;
         let mut wayland_ctx = WaylandContext::init()?;
 
@@ -61,7 +68,7 @@ impl WallpaperDaemon {
 
         tracing::info!("[Daemon] Discovered Wayland outputs:");
         for (name, _) in &outputs_info {
-            tracing::info!("  - {name}");
+            tracing::info!(output = %name, "  - Discovered output");
         }
 
         let mut output_manager = OutputManager::new();
@@ -83,8 +90,8 @@ impl WallpaperDaemon {
         }
 
         tracing::info!(
-            "[Daemon] Initialized {} active output(s) concurrently",
-            output_manager.len()
+            count = output_manager.len(),
+            "[Daemon] Initialized active output(s) concurrently"
         );
 
         let ipc_server = IpcServer::bind(socket_path)?;
@@ -99,10 +106,9 @@ impl WallpaperDaemon {
             requested_output: requested_output.map(|s| s.to_string()),
             transcode_tx,
             transcode_rx,
-            current_converting: None,
+            job_manager: JobManager::new(),
         })
     }
-
 
     /// Handles dynamic Wayland output addition, update, and removal (hotplug).
     pub fn handle_output_events(&mut self) -> Result<()> {
@@ -112,30 +118,47 @@ impl WallpaperDaemon {
                 WaylandOutputEvent::AddedOrUpdated(wl_out) => {
                     if let Some(name) = self.wayland_ctx.output_name(&wl_out) {
                         // If daemon was started for a specific output, ignore other outputs
-                        if let Some(ref req) = self.requested_output {
-                            if req != &name {
-                                continue;
-                            }
+                        if let Some(ref req) = self.requested_output
+                            && req != &name
+                        {
+                            continue;
                         }
 
                         if !self.outputs.contains(&name) {
-                            tracing::info!("[Daemon] Discovered newly attached Wayland output: {name}");
+                            tracing::info!(output = %name, "[Daemon] Discovered newly attached Wayland output");
                             match self.outputs.init_output(&mut self.wayland_ctx, name.clone(), wl_out) {
                                 Ok(()) => {
-                                    tracing::info!("[Daemon] Successfully initialized hotplugged output '{name}'");
+                                    tracing::info!(output = %name, "[Daemon] Successfully initialized hotplugged output");
                                     // If another output is already playing a wallpaper, match it
                                     if let Some(active_vid) = self.outputs.default_active_video() {
                                         tracing::info!(
-                                            "[Daemon] Automatically applying active wallpaper to hotplugged output '{name}': {:?}",
-                                            active_vid
+                                            output = %name,
+                                            video = ?active_vid,
+                                            "[Daemon] Automatically applying active wallpaper to hotplugged output"
                                         );
-                                        let _ = self.outputs.set_video(Some(&name), &active_vid, None);
+                                        if let Err(e) = self.outputs.set_video(Some(&name), &active_vid, None) {
+                                            tracing::warn!(output = %name, error = %e, "[Daemon] Failed to apply active wallpaper to hotplugged output");
+                                        }
                                     }
                                 }
                                 Err(e) => {
                                     tracing::warn!(
-                                        "[Daemon] Failed to initialize newly attached output '{name}': {e}"
+                                        output = %name,
+                                        error = %e,
+                                        "[Daemon] Failed to initialize newly attached output"
                                     );
+                                }
+                            }
+                        } else {
+                            if let Some(geom) = self.wayland_ctx.output_geometry(&wl_out) {
+                                match self.outputs.update_output_geometry(&mut self.wayland_ctx, &name, geom) {
+                                    Ok(true) => {
+                                        tracing::info!(output = %name, "[Daemon] Output geometry updated successfully");
+                                    }
+                                    Ok(false) => {}
+                                    Err(e) => {
+                                        tracing::warn!(output = %name, error = %e, "[Daemon] Failed to update geometry for output");
+                                    }
                                 }
                             }
                         }
@@ -143,7 +166,7 @@ impl WallpaperDaemon {
                 }
                 WaylandOutputEvent::Destroyed(wl_out) => {
                     if let Some(removed_name) = self.outputs.remove_output_by_wl(&mut self.wayland_ctx, &wl_out) {
-                        tracing::info!("[Daemon] Output '{removed_name}' disconnected and cleaned up.");
+                        tracing::info!(output = %removed_name, "[Daemon] Output disconnected and cleaned up");
                     }
                 }
             }
@@ -166,6 +189,9 @@ impl WallpaperDaemon {
                             .map(|p| p.to_string_lossy().to_string()),
                         generation: out.generation,
                         loop_count: out.player.loop_count(),
+                        width: out.width,
+                        height: out.height,
+                        scale: out.scale,
                     });
                 }
                 output_statuses.sort_by(|a, b| a.name.cmp(&b.name));
@@ -173,8 +199,9 @@ impl WallpaperDaemon {
                 let status = DaemonStatus {
                     daemon_version: env!("CARGO_PKG_VERSION").to_string(),
                     outputs: output_statuses,
-                    is_converting: self.current_converting.is_some(),
-                    converting_file: self.current_converting.clone(),
+                    is_converting: self.job_manager.is_converting(),
+                    converting_file: self.job_manager.current_converting_file(),
+                    active_jobs: self.job_manager.active_jobs(),
                 };
 
                 match serde_json::to_value(&status) {
@@ -198,14 +225,19 @@ impl WallpaperDaemon {
                     );
                 }
 
-                if let Some(ref target_name) = req.output {
-                    if !self.outputs.contains(target_name) {
-                        return ResponseEnvelope::failure(
-                            req.request_id,
-                            format!("Output '{}' not managed by daemon", target_name),
-                        );
-                    }
+                if let Some(ref target_name) = req.output
+                    && !self.outputs.contains(target_name)
+                {
+                    return ResponseEnvelope::failure(
+                        req.request_id,
+                        format!("Output '{}' not managed by daemon", target_name),
+                    );
                 }
+
+                let generation = match self.outputs.allocate_generation(req.output.as_deref(), req.generation) {
+                    Ok(g) => g,
+                    Err(e) => return ResponseEnvelope::failure(req.request_id, e.to_string()),
+                };
 
                 let cached_path = match self.cache.import_video(path) {
                     Ok(p) => p,
@@ -217,14 +249,17 @@ impl WallpaperDaemon {
                     }
                 };
 
-                if let Err(e) =
-                    self.outputs
-                        .set_video(req.output.as_deref(), &cached_path, req.generation)
-                {
-                    return ResponseEnvelope::failure(req.request_id, e.to_string());
-                }
+                let apply_result = match self.outputs.set_video(
+                    req.output.as_deref(),
+                    &cached_path,
+                    Some(generation),
+                ) {
+                    Ok(r) => r,
+                    Err(e) => return ResponseEnvelope::failure(req.request_id, e.to_string()),
+                };
 
-                ResponseEnvelope::success(req.request_id, None)
+                let data = serde_json::to_value(&apply_result).ok();
+                ResponseEnvelope::success(req.request_id, data)
             }
 
             CommandType::Pause => {
@@ -257,12 +292,32 @@ impl WallpaperDaemon {
         }
     }
 
+    fn send_ipc_response(&mut self, client_id: ClientId, resp: &ResponseEnvelope) {
+        if let Err(e) = self.ipc_server.respond(client_id, resp) {
+            tracing::debug!(
+                client_id = client_id.0,
+                request_id = resp.request_id,
+                success = resp.success,
+                error = %e,
+                "[Daemon] Failed to deliver IPC response to client (client disconnected or timed out)"
+            );
+        }
+    }
+
     /// Handles an incoming IPC pending request. `SetVideo` commands are dispatched
     /// asynchronously to worker threads so the main event loop and ongoing video playback
     /// are never blocked, preventing black screens and stalled frame rendering.
     fn handle_pending_request(&mut self, pending: PendingRequest) {
         let req = pending.request;
         let client_id = pending.client_id;
+
+        tracing::debug!(
+            client_id = client_id.0,
+            request_id = req.request_id,
+            command = ?req.command,
+            output = ?req.output,
+            "[Daemon] Received IPC request"
+        );
 
         match req.command {
             CommandType::SetVideo => {
@@ -271,7 +326,7 @@ impl WallpaperDaemon {
                         req.request_id,
                         "'set_video' command requires 'path'",
                     );
-                    let _ = self.ipc_server.respond(client_id, &resp);
+                    self.send_ipc_response(client_id, &resp);
                     return;
                 };
 
@@ -280,57 +335,114 @@ impl WallpaperDaemon {
                         req.request_id,
                         format!("Video file does not exist: {:?}", path),
                     );
-                    let _ = self.ipc_server.respond(client_id, &resp);
+                    self.send_ipc_response(client_id, &resp);
                     return;
                 }
 
-                if let Some(target_name) = req.output.as_deref() {
-                    if !self.outputs.contains(target_name) {
-                        let resp = ResponseEnvelope::failure(
-                            req.request_id,
-                            format!("Output '{}' not managed by daemon", target_name),
-                        );
-                        let _ = self.ipc_server.respond(client_id, &resp);
+                if let Some(target_name) = req.output.as_deref()
+                    && !self.outputs.contains(target_name)
+                {
+                    let resp = ResponseEnvelope::failure(
+                        req.request_id,
+                        format!("Output '{}' not managed by daemon", target_name),
+                    );
+                    self.send_ipc_response(client_id, &resp);
+                    return;
+                }
+
+                // Reserve monotonic generation AT REQUEST ARRIVAL TIME
+                let generation = match self.outputs.allocate_generation(req.output.as_deref(), req.generation) {
+                    Ok(g) => g,
+                    Err(e) => {
+                        let resp = ResponseEnvelope::failure(req.request_id, e.to_string());
+                        self.send_ipc_response(client_id, &resp);
                         return;
+                    }
+                };
+
+                // Fast check: if the path is ALREADY inside the persistent cache videos directory,
+                // apply it immediately without spawning a worker thread.
+                let is_already_cached = path.parent().map(|p| p == self.cache.videos_dir()).unwrap_or(false);
+                if is_already_cached && path.exists() {
+                    let has_metadata = path.file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .map(|hash| self.cache.metadata_dir().join(format!("{hash}.json")).exists())
+                        .unwrap_or(false);
+
+                    if has_metadata {
+                        tracing::info!(
+                            operation = "cache_hit_direct",
+                            path = ?path,
+                            generation,
+                            target = ?req.output,
+                            "[Daemon] Direct cache hit: video already exists in persistent storage"
+                        );
+                        match self.outputs.set_video(req.output.as_deref(), path, Some(generation)) {
+                            Ok(apply_result) => {
+                                let data = serde_json::to_value(&apply_result).ok();
+                                let resp = ResponseEnvelope::success(req.request_id, data);
+                                self.send_ipc_response(client_id, &resp);
+                                return;
+                            }
+                            Err(e) => {
+                                let resp = ResponseEnvelope::failure(req.request_id, e.to_string());
+                                self.send_ipc_response(client_id, &resp);
+                                return;
+                            }
+                        }
                     }
                 }
 
-                let path_buf = path.clone();
-                let storage_dir = self.cache.root_dir().to_path_buf();
-                let tx = self.transcode_tx.clone();
-                let request_id = req.request_id;
-                let target_output = req.output.clone();
-                let generation = req.generation;
+                // Canonicalize path for stable in-flight job deduplication without blocking on full-file SHA-256
+                let canonical_source = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
-                let file_name_str = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| path.display().to_string());
-                self.current_converting = Some(file_name_str);
-
-                tracing::info!(
-                    "[Daemon] Asynchronously normalizing and storing video: {:?} (target: {:?})",
-                    path, target_output
+                // Register with JobManager (in-flight deduplication attaches subscriber without spawning duplicate worker)
+                let (job_id, is_new) = self.job_manager.register_job(
+                    &canonical_source,
+                    None,
+                    generation,
+                    req.output.clone(),
+                    req.request_id,
+                    Some(client_id),
                 );
 
-                // Run import_video on worker thread to never block main loop & Wayland dispatch
-                thread::spawn(move || {
-                    let manager = CacheManager::new(&storage_dir);
-                    let result = match manager {
-                        Ok(mgr) => mgr.import_video(&path_buf),
-                        Err(e) => Err(e),
-                    };
+                tracing::info!(
+                    operation = "job_registered",
+                    job_id,
+                    generation,
+                    is_new,
+                    target = ?req.output,
+                    path = ?canonical_source,
+                    "[Daemon] Transcode job registered"
+                );
 
-                    let _ = tx.send(TranscodeJobResult {
-                        request_id,
-                        client_id: Some(client_id),
-                        target_output,
-                        generation,
-                        result,
+                if is_new {
+                    let path_buf = canonical_source;
+                    let storage_dir = self.cache.root_dir().to_path_buf();
+                    let tx = self.transcode_tx.clone();
+
+                    // Run video probe, content hashing, and transcoding on a background worker thread
+                    // to completely avoid blocking the daemon main loop and Wayland event dispatch.
+                    thread::spawn(move || {
+                        let manager = CacheManager::new(&storage_dir);
+                        let result = match manager {
+                            Ok(mgr) => mgr.import_video(&path_buf),
+                            Err(e) => Err(e),
+                        };
+
+                        if let Err(e) = tx.send(TranscodeJobResult {
+                            job_id,
+                            result,
+                        }) {
+                            tracing::warn!(job_id, error = %e, "[Daemon] Failed to send transcode result to main loop (channel closed)");
+                        }
                     });
-                });
+                }
             }
 
             _ => {
                 let resp = self.handle_request(&req);
-                let _ = self.ipc_server.respond(client_id, &resp);
+                self.send_ipc_response(client_id, &resp);
             }
         }
     }
@@ -339,35 +451,102 @@ impl WallpaperDaemon {
     /// and background transcode job completion.
     pub fn step(&mut self) -> Result<()> {
         // 0. Poll completed background transcode jobs
-        while let Ok(job) = self.transcode_rx.try_recv() {
-            self.current_converting = None;
-            match job.result {
+        while let Ok(msg) = self.transcode_rx.try_recv() {
+            let Some(job) = self.job_manager.get_job(msg.job_id).cloned() else {
+                continue;
+            };
+
+            match msg.result {
                 Ok(cached_path) => {
-                    tracing::info!(
-                        "[Daemon] Normalization complete, applying wallpaper seamlessly: {:?}",
-                        cached_path
-                    );
-                    let apply_res = self.outputs.set_video(
-                        job.target_output.as_deref(),
-                        &cached_path,
-                        job.generation,
-                    );
-                    if let Some(client_id) = job.client_id {
-                        let resp = match apply_res {
-                            Ok(()) => ResponseEnvelope::success(job.request_id, None),
-                            Err(e) => ResponseEnvelope::failure(job.request_id, e.to_string()),
-                        };
-                        let _ = self.ipc_server.respond(client_id, &resp);
+                    let mut any_success = false;
+                    let mut all_stale = true;
+
+                    // Apply wallpaper for each subscriber to its specific target output and generation.
+                    // This guarantees that concurrent requests for different outputs sharing the same
+                    // in-flight conversion job are each applied to their respective output correctly.
+                    for sub in &job.subscribers {
+                        let apply_res = self.outputs.set_video(
+                            sub.target_output.as_deref(),
+                            &cached_path,
+                            Some(sub.generation),
+                        );
+                        match apply_res {
+                            Ok(set_video_result) => {
+                                any_success = true;
+                                all_stale = false;
+                                tracing::info!(
+                                    operation = "job_subscriber_applied",
+                                    job_id = job.id,
+                                    request_id = sub.request_id,
+                                    generation = sub.generation,
+                                    target = ?sub.target_output,
+                                    cached_path = ?cached_path,
+                                    "[Daemon] Wallpaper applied successfully for subscriber"
+                                );
+                                if let Some(client_id) = sub.client_id {
+                                    let data = serde_json::to_value(&set_video_result).ok();
+                                    let resp = ResponseEnvelope::success(sub.request_id, data);
+                                    self.send_ipc_response(client_id, &resp);
+                                }
+                            }
+                            Err(FluffyError::Ipc(ref err_msg)) if err_msg.starts_with("Stale request generation") => {
+                                tracing::warn!(
+                                    operation = "job_subscriber_stale",
+                                    job_id = job.id,
+                                    request_id = sub.request_id,
+                                    generation = sub.generation,
+                                    target = ?sub.target_output,
+                                    reason = %err_msg,
+                                    "[Daemon] Subscriber request was superseded by a newer generation"
+                                );
+                                if let Some(client_id) = sub.client_id {
+                                    let resp = ResponseEnvelope::failure(sub.request_id, err_msg.clone());
+                                    self.send_ipc_response(client_id, &resp);
+                                }
+                            }
+                            Err(e) => {
+                                all_stale = false;
+                                tracing::error!(
+                                    operation = "job_subscriber_failed",
+                                    job_id = job.id,
+                                    request_id = sub.request_id,
+                                    generation = sub.generation,
+                                    target = ?sub.target_output,
+                                    error = %e,
+                                    "[Daemon] Subscriber failed to apply wallpaper"
+                                );
+                                if let Some(client_id) = sub.client_id {
+                                    let resp = ResponseEnvelope::failure(sub.request_id, e.to_string());
+                                    self.send_ipc_response(client_id, &resp);
+                                }
+                            }
+                        }
+                    }
+
+                    if any_success {
+                        self.job_manager.complete_job(job.id);
+                    } else if all_stale {
+                        self.job_manager.mark_stale(job.id);
+                    } else {
+                        self.job_manager.fail_job(job.id, "All outputs failed to apply wallpaper".to_string());
                     }
                 }
                 Err(e) => {
-                    tracing::error!("[Daemon] Background normalization failed: {e}");
-                    if let Some(client_id) = job.client_id {
-                        let resp = ResponseEnvelope::failure(
-                            job.request_id,
-                            format!("Video normalization failed: {e}"),
-                        );
-                        let _ = self.ipc_server.respond(client_id, &resp);
+                    self.job_manager.fail_job(job.id, e.to_string());
+                    tracing::error!(
+                        operation = "job_transcode_failed",
+                        job_id = job.id,
+                        error = %e,
+                        "[Daemon] Background video normalization failed"
+                    );
+                    for sub in &job.subscribers {
+                        if let Some(client_id) = sub.client_id {
+                            let resp = ResponseEnvelope::failure(
+                                sub.request_id,
+                                format!("Video normalization failed: {e}"),
+                            );
+                            self.send_ipc_response(client_id, &resp);
+                        }
                     }
                 }
             }
@@ -404,6 +583,7 @@ impl WallpaperDaemon {
 
         tracing::info!("[Daemon] Shutdown signal detected. Performing clean teardown...");
         self.teardown();
+        tracing::info!("[Daemon] Daemon teardown completed. Clean shutdown.");
         Ok(())
     }
 

@@ -46,7 +46,11 @@ impl IpcServer {
                 }
                 Err(_) => {
                     // Socket file exists but not responding; remove stale socket
-                    let _ = fs::remove_file(&socket_path);
+                    if let Err(e) = fs::remove_file(&socket_path)
+                        && e.kind() != std::io::ErrorKind::NotFound
+                    {
+                        tracing::warn!(operation = "socket_cleanup", error = %e, path = ?socket_path, "[IPC] Failed to remove stale socket file");
+                    }
                 }
             }
         }
@@ -58,10 +62,12 @@ impl IpcServer {
         if let Ok(metadata) = fs::metadata(&socket_path) {
             let mut permissions = metadata.permissions();
             permissions.set_mode(0o600);
-            let _ = fs::set_permissions(&socket_path, permissions);
+            if let Err(e) = fs::set_permissions(&socket_path, permissions) {
+                tracing::warn!(operation = "socket_permissions", error = %e, path = ?socket_path, "[IPC] Failed to set permissions (0600) on socket file");
+            }
         }
 
-        println!("[IPC] Server listening on Unix socket: {:?}", socket_path);
+        tracing::info!(operation = "ipc_listen", socket = ?socket_path, "[IPC] Server listening on Unix socket");
 
         Ok(Self {
             socket_path,
@@ -115,7 +121,9 @@ impl IpcServer {
                             0,
                             format!("Request exceeded max size of {} bytes", MAX_REQUEST_SIZE),
                         );
-                        let _ = Self::send_response_to_stream(reader.get_mut(), &resp);
+                        if let Err(e) = Self::send_response_to_stream(reader.get_mut(), &resp) {
+                            tracing::debug!(client_id = client_id.0, error = %e, "[IPC] Failed to send oversized request error to client");
+                        }
                         disconnected.push(client_id);
                         continue;
                     }
@@ -129,7 +137,9 @@ impl IpcServer {
                         Ok(req) => {
                             if let Err(err) = req.validate() {
                                 let resp = ResponseEnvelope::failure(req.request_id, err.to_string());
-                                let _ = Self::send_response_to_stream(reader.get_mut(), &resp);
+                                if let Err(e) = Self::send_response_to_stream(reader.get_mut(), &resp) {
+                                    tracing::debug!(client_id = client_id.0, error = %e, "[IPC] Failed to send validation error to client");
+                                }
                                 disconnected.push(client_id);
                             } else {
                                 pending.push(PendingRequest {
@@ -140,7 +150,9 @@ impl IpcServer {
                         }
                         Err(e) => {
                             let resp = ResponseEnvelope::failure(0, format!("Malformed JSON: {e}"));
-                            let _ = Self::send_response_to_stream(reader.get_mut(), &resp);
+                            if let Err(err) = Self::send_response_to_stream(reader.get_mut(), &resp) {
+                                tracing::debug!(client_id = client_id.0, error = %err, "[IPC] Failed to send JSON parse error to client");
+                            }
                             disconnected.push(client_id);
                         }
                     }
@@ -182,8 +194,12 @@ impl IpcServer {
 impl Drop for IpcServer {
     fn drop(&mut self) {
         if self.socket_path.exists() {
-            println!("[IPC] Removing socket file: {:?}", self.socket_path);
-            let _ = fs::remove_file(&self.socket_path);
+            tracing::info!(operation = "socket_cleanup", socket = ?self.socket_path, "[IPC] Removing socket file during server shutdown");
+            if let Err(e) = fs::remove_file(&self.socket_path)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(operation = "socket_cleanup", error = %e, socket = ?self.socket_path, "[IPC] Failed to remove socket file on shutdown");
+            }
         }
     }
 }

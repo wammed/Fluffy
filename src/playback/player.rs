@@ -52,6 +52,19 @@ impl GstVideoPlayer {
     pub fn loop_count(&self) -> u64 {
         self.loop_count
     }
+
+    pub fn update_geometry(&mut self, width: u32, height: u32) -> Result<()> {
+        self.width = width;
+        self.height = height;
+        if let Some(ref handle) = self.pipeline_handle
+            && let Err(e) = handle
+                .overlay
+                .set_render_rectangle(0, 0, width as i32, height as i32)
+        {
+            tracing::trace!(operation = "render_rectangle", error = ?e, "[Player] set_render_rectangle ignored during geometry update");
+        }
+        Ok(())
+    }
 }
 
 impl VideoPlayer for GstVideoPlayer {
@@ -64,9 +77,10 @@ impl VideoPlayer for GstVideoPlayer {
         // 5. Transition the new pipeline to PLAYING.
         // 6. Tear down the old pipeline (its subsurface is cleanly removed underneath).
         if self.pipeline_handle.is_some() {
-            println!(
-                "[Player] Seamless transition: prerolling new video before releasing old: {:?}",
-                video
+            tracing::info!(
+                operation = "pipeline_switch",
+                video = ?video,
+                "[Player] Seamless transition: prerolling new video before releasing old"
             );
 
             let new_handle = unsafe {
@@ -85,9 +99,12 @@ impl VideoPlayer for GstVideoPlayer {
             // Wait for preroll to complete (first frame is committed to the compositor)
             let (state_change_res, current_st, pending_st) =
                 new_handle.pipeline.state(gstreamer::ClockTime::from_seconds(3));
-            println!(
-                "[Player] Preroll completed: res={:?}, current={:?}, pending={:?}",
-                state_change_res, current_st, pending_st
+            tracing::debug!(
+                operation = "preroll",
+                res = ?state_change_res,
+                current = ?current_st,
+                pending = ?pending_st,
+                "[Player] Preroll completed"
             );
 
             // Now transition new pipeline to Playing
@@ -95,15 +112,17 @@ impl VideoPlayer for GstVideoPlayer {
 
             // Swap out old handle and tear it down cleanly
             let old_handle = self.pipeline_handle.replace(new_handle);
-            if let Some(old) = old_handle {
-                let _ = old.pipeline.set_state(gstreamer::State::Null);
+            if let Some(old) = old_handle
+                && let Err(e) = old.pipeline.set_state(gstreamer::State::Null)
+            {
+                tracing::warn!(operation = "pipeline_teardown", error = %e, "[Player] Failed to set old pipeline state to Null");
             }
 
             self.current_video = Some(video.to_path_buf());
             self.state = PlaybackState::Playing;
             self.loop_count = 0;
 
-            println!("[Player] Seamless transition finished for: {:?}", video);
+            tracing::info!(operation = "pipeline_switch_complete", video = ?video, "[Player] Seamless transition finished");
             return Ok(());
         }
 
@@ -125,7 +144,7 @@ impl VideoPlayer for GstVideoPlayer {
         self.state = PlaybackState::Playing;
         self.loop_count = 0;
 
-        println!("[Player] Started initial playback for: {:?}", video);
+        tracing::info!(operation = "pipeline_start", video = ?video, "[Player] Started initial playback");
         Ok(())
     }
 
@@ -133,7 +152,7 @@ impl VideoPlayer for GstVideoPlayer {
         if let Some(ref handle) = self.pipeline_handle {
             handle.pipeline.set_state(gstreamer::State::Paused)?;
             self.state = PlaybackState::Paused;
-            println!("[Player] Playback PAUSED");
+            tracing::info!(operation = "playback_pause", "[Player] Playback PAUSED");
         }
         Ok(())
     }
@@ -142,17 +161,19 @@ impl VideoPlayer for GstVideoPlayer {
         if let Some(ref handle) = self.pipeline_handle {
             handle.pipeline.set_state(gstreamer::State::Playing)?;
             self.state = PlaybackState::Playing;
-            println!("[Player] Playback RESUMED");
+            tracing::info!(operation = "playback_resume", "[Player] Playback RESUMED");
         }
         Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
         if let Some(handle) = self.pipeline_handle.take() {
-            let _ = handle.pipeline.set_state(gstreamer::State::Null);
+            if let Err(e) = handle.pipeline.set_state(gstreamer::State::Null) {
+                tracing::warn!(operation = "pipeline_teardown", error = %e, "[Player] Failed to set pipeline state to Null during stop");
+            }
             self.state = PlaybackState::Stopped;
             self.current_video = None;
-            println!("[Player] Playback STOPPED");
+            tracing::info!(operation = "playback_stop", "[Player] Playback STOPPED");
         }
         Ok(())
     }
@@ -175,23 +196,25 @@ impl VideoPlayer for GstVideoPlayer {
             match msg.view() {
                 MessageView::Eos(..) => {
                     self.loop_count += 1;
-                    println!(
-                        "[Player] EOS reached! Seamless loop (cycle #{}). Seeking to 0...",
-                        self.loop_count
+                    tracing::debug!(
+                        operation = "eos_loop",
+                        cycle = self.loop_count,
+                        "[Player] EOS reached; seeking to 0 for seamless loop"
                     );
                     let res = handle.pipeline.seek_simple(
                         gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::KEY_UNIT,
                         gstreamer::ClockTime::ZERO,
                     );
                     if let Err(e) = res {
-                        eprintln!("[Player] Seek to 0 failed: {e:?}");
+                        tracing::warn!(operation = "seek_loop", error = ?e, "[Player] Seek to 0 failed during loop");
                     }
                 }
                 MessageView::Error(err) => {
-                    eprintln!(
-                        "[Player] GStreamer Error: {} ({:?})",
-                        err.error(),
-                        err.debug()
+                    tracing::error!(
+                        operation = "gst_bus_error",
+                        error = %err.error(),
+                        debug = ?err.debug(),
+                        "[Player] GStreamer Error received from bus"
                     );
                     self.state = PlaybackState::Stopped;
                     return Ok(false);
@@ -213,9 +236,12 @@ impl VideoPlayer for GstVideoPlayer {
                     unsafe {
                         handle.overlay.set_window_handle(self.raw_surface_ptr);
                     }
-                    let _ = handle
+                    if let Err(e) = handle
                         .overlay
-                        .set_render_rectangle(0, 0, self.width as i32, self.height as i32);
+                        .set_render_rectangle(0, 0, self.width as i32, self.height as i32)
+                    {
+                        tracing::trace!(operation = "render_rectangle", error = ?e, "[Player] Overlay set_render_rectangle ignored");
+                    }
                 }
                 _ => {}
             }

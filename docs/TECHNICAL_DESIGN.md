@@ -94,17 +94,15 @@ downscale encode**.
 
 ### 2.3 Prefer hardware decode, never promise it
 
-The playback system should prefer an available hardware decoder.
+Hardware decode is preferred; the actual decoder depends on the GStreamer environment and installed system plugins.
 
-Examples of possible platform paths include:
+Examples of platform paths include:
 
--   VA-API on supported Intel/AMD environments
--   NVIDIA hardware decode where the installed GStreamer stack exposes
-    it
--   software decoding as fallback
+-   NVIDIA hardware decode via NVDEC (`nvh264dec`) where the driver and GStreamer plugins expose it (verified on this test environment: NVIDIA GeForce RTX 3080, Driver 615.71.09, GStreamer 1.28.7)
+-   VA-API on supported Intel/AMD environments (`vaapih264dec` or `vah264dec`)
+-   Software decoding fallback (`avdec_h264`) when hardware decoders are absent or fail negotiation
 
-The project must not claim that hardware decode is guaranteed on all
-Intel/AMD/NVIDIA systems.
+The project does not claim that hardware decode is guaranteed across all environments, but dynamically selects the highest-ranked available decoder via GStreamer `playbin`.
 
 ### 2.4 Prefer DMABUF paths when negotiated
 
@@ -192,18 +190,19 @@ when the application wants deterministic output binding.
    - The user's original desktop wallpaper managed by `cosmic-bg` immediately becomes visible without leaving the screen black and without requiring user intervention or wallpaper reconfiguration.
    - This design guarantee ensures zero destructive impact on user desktop settings.
 
-### 3.2 Viewporter
+### 3.2 Surface Scaling & Protocol Status (Implemented vs. Unimplemented)
 
-`wp_viewporter` / `wp_viewport` is used to express source cropping and
-destination scaling at the Wayland surface level.
+To maintain precise architectural clarity, Wayland features are distinguished as follows:
 
-The video is not resized in the Rust render loop merely to match the
-monitor geometry.
+1. **Implemented & Verified:**
+   - **`zwlr_layer_shell_v1`**: Full layer-shell integration on `Layer::Bottom` covering target outputs without stealing focus.
+   - **Output Hotplug**: Real-time detection of display connection (`new_output`) and disconnection (`output_destroyed`).
+   - **Output Geometry & Scale Updates**: Dynamic resolution updates, monitor scale factor tracking, and logical positioning via `wl_output` events without daemon restart.
+   - **Surface Scaling**: Wallpaper surfaces anchor to all four borders (`TOP | BOTTOM | LEFT | RIGHT`) while video frame rendering is scaled to surface bounds via GStreamer `overlay.set_render_rectangle(0, 0, width, height)`.
+   - **Multi-Output Management**: Independent layer surfaces and playback pipelines per physical monitor (`1 output = 1 surface = 1 pipeline`).
 
-The compositor remains responsible for the final surface scaling.
-
-The implementation must still verify the actual behavior on
-COSMIC/cosmic-comp.
+2. **Unimplemented / Future Protocol Enhancement:**
+   - **`wp_viewporter` / `wp_viewport` Protocol Extension**: Direct Wayland protocol binding of `wp_viewporter` in the Rust client code is **not implemented** in v1. Video frame scaling and viewport adjustments are currently handled internally by `waylandsink` and the Wayland compositor (`cosmic-comp`). Direct client-side `wp_viewport` integration is tracked as a future enhancement for fractional pixel cropping.
 
 ### 3.3 GStreamer integration risk
 
@@ -380,6 +379,8 @@ requested video.
 
 ------------------------------------------------------------------------
 
+------------------------------------------------------------------------
+
 ## 7. Multi-monitor Model
 
 The v1 model is:
@@ -398,36 +399,37 @@ DP-2
   -> GStreamer Pipeline B
 ```
 
-This intentionally does not attempt shared decoding in v1.
+This intentionally does not attempt shared decoding across monitors in v1.
 
-If the same video is used on multiple outputs, v1 may decode it
-independently.
+If the same video is used on multiple outputs, v1 decodes it independently on each output.
 
-Shared decode / tee-based optimization is a later optimization because
-DMABUF sharing, sink negotiation, output formats, and lifetime
-management add complexity.
+### 7.1 Best-Effort All-Output Semantics
+
+When `set-video` is invoked without specifying an `--output` (global broadcast to all displays), the daemon applies the video on a **best-effort** basis per output:
+- Each output pipeline is updated independently.
+- If Output A succeeds and Output B fails (e.g., subsurface allocation error or pipeline failure on Output B), Output A transitions to the new video while Output B retains its existing playback state.
+- The IPC response returns a structured `SetVideoResult` containing a list of `OutputApplyResult` items (specifying each `output`, `success: bool`, and optional `error: String`).
+- A full transactional rollback across all outputs is intentionally avoided, as rolling back GStreamer Wayland pipelines after partial commitment introduces state corruption and visual tearing risks.
 
 ------------------------------------------------------------------------
 
-## 8. Output Lifecycle
+## 8. Output Lifecycle & Dynamic Geometry
 
-Required events:
+Required events handled by `OutputManager`:
 
--   output discovered
--   output metadata updated
--   output removed
--   output geometry changed
--   output scale changed
--   output reconfigured
+-   `new_output`: Output discovered; creates `ManagedOutput`, binds layer surface on `Layer::Bottom`, and initializes playback pipeline.
+-   `output_destroyed`: Output disconnected; cleanly tears down GStreamer pipeline, unmaps layer surface, and removes output state.
+-   `update_output`: Output geometry or scale changed; dynamically updates `OutputGeometry` (logical width, height, scale factor, x, y coordinates).
 
-The daemon must not assume that the first `wl_output` event contains
-final logical geometry.
+### 8.1 Authoritative Geometry Updates
 
-Surface configuration should wait for the relevant compositor configure
-sequence before treating the output size as authoritative.
-
-Output identification should use stable Wayland output metadata where
-available.
+The daemon does not treat the first `wl_output.geometry` event as final. Instead:
+- Sizing configuration waits for `wl_output.done` and layer surface configure events.
+- When resolution or scale changes (e.g. 2560x1440 -> 3840x2160, or scale 1.0 -> 1.5):
+  - Surface dimensions and layer surface anchors are reconfigured.
+  - Viewport render rectangle (`overlay.set_render_rectangle(0, 0, width, height)`) is updated.
+  - If geometry changed while playing, the player pipeline is cleanly reconfigured for the new resolution.
+- Output identification uses stable Wayland connector names (`DP-1`, `DP-2`, `HDMI-A-1`) matching COSMIC display configuration.
 
 ------------------------------------------------------------------------
 
@@ -439,13 +441,13 @@ Transport:
 Unix domain socket
 ```
 
-Recommended location:
+Location:
 
 ``` text
-$XDG_RUNTIME_DIR/my-wallpaper.sock
+$XDG_RUNTIME_DIR/fluffy.sock (fallback: /run/user/<UID>/fluffy.sock)
 ```
 
-The socket must not be placed in a world-writable persistent directory.
+The socket has strict `0600` file permissions (owner only) and automatically clears stale dead sockets upon daemon startup.
 
 ### 9.1 Commands
 
@@ -460,15 +462,6 @@ stop
 reload
 ```
 
-Possible future commands:
-
-``` text
-set-output-video
-clear-output
-list-outputs
-get-config
-```
-
 ### 9.2 Request envelope
 
 Logical protocol:
@@ -479,130 +472,132 @@ Logical protocol:
   "generation": 42,
   "command": "set_video",
   "output": "DP-1",
-  "path": "/home/user/.cache/my-wallpaper/objects/abc.mp4"
+  "path": "/home/user/video.mp4"
 }
 ```
 
-### 9.3 Generation semantics
+### 9.3 Generation Semantics (Monotonic Reservation at Request Arrival)
 
-If request 42 is still processing and request 43 supersedes it:
+To prevent race conditions during asynchronous video transcoding and switching:
+1. **Reservation at Request Arrival**: The daemon controller increments its monotonic generation counter (`self.generation += 1`) immediately upon receiving the `set-video` request, *not* when transcoding completes.
+2. **Stale Job Detection**: The assigned generation is passed into the background `TranscodeJob`. When the job completes, the daemon controller checks `job.generation == self.generation`.
+3. If a newer request (e.g. Generation 11) arrived while Generation 10 was transcoding:
+   ``` text
+   Request A arrives -> Generation 10 assigned, transcode begins
+   Request B arrives -> Generation 11 assigned, transcode begins
+   Request B finishes -> 11 == current (11) -> applied to outputs
+   Request A finishes -> 10 < current (11) -> detected as STALE -> discarded cleanly
+   ```
+   Older asynchronous tasks never overwrite newer user requests.
 
-``` text
-generation 42 -> stale -> discard
-generation 43 -> current -> apply
-```
+### 9.4 JobManager & In-Flight Deduplication
 
-This is mandatory for asynchronous video switching.
+Asynchronous video normalization is managed by `JobManager` with explicit lifecycle tracking:
+- **8-State Model**: Each job progresses through defined states:
+  `Queued` -> `Probing` -> `Transcoding` -> `Installing` -> `Completed` (or `Failed`, `Cancelled`, `Stale`).
+- **In-Flight Deduplication**: When a `set-video` request is received, the content SHA-256 hash is checked. If an active job for the same content hash is already running (`Queued`, `Probing`, `Transcoding`, or `Installing`), the new request attaches to or reuses the existing job instead of spawning duplicate `ffprobe` / `ffmpeg` processes.
+- **Multiple Concurrent Jobs**: The daemon accurately tracks multiple active conversion jobs via `HashMap<JobId, TranscodeJob>`, avoiding single-job state clobbering.
 
-### 9.4 IPC validation
+### 9.5 Asynchronous Settings GUI IPC
 
-The daemon must validate:
+The `fluffy-settings` GUI executes all IPC interactions (queries, status checks, video commands) asynchronously via `iced::Task` / dedicated background worker threads. The GUI interface remains completely responsive (0 frame drops, no input lag) regardless of daemon transcode load or socket latency.
 
+### 9.6 IPC validation
+
+The daemon strictly validates:
 -   command type
 -   required fields
--   path type
+-   path type (canonicalized, rejecting path traversal)
 -   target output
 -   generation
--   request size
+-   request size (max 64 KB)
 -   malformed input
 
-The daemon must never execute arbitrary shell commands received over
-IPC.
+The daemon never executes arbitrary shell commands received over IPC.
 
 ------------------------------------------------------------------------
 
-## 10. Video Import Pipeline
+## 10. Video Import Pipeline & Container Validation
 
 ``` text
 User selects input
        |
        v
-     ffprobe
+     ffprobe (container + video stream + 4K check)
        |
-       +-- invalid / oversized --> reject
+       +-- invalid / oversized (>3840x2160) --> reject
        |
-       v
-   normalize metadata
-       |
-       v
-     ffmpeg
-       |
-       v
- temporary cache file
+       +-- MP4 container && H.264 && yuv420p && progressive && <=30fps && even dims
+       |         |
+       |         v
+       |   direct bypass (instant copy, no transcoding CPU cost)
        |
        v
- atomic rename
+  non-MP4 container (MKV/WebM) or non-compliant codec (HEVC/AV1/60fps)
        |
        v
-   cache metadata
+     ffmpeg (H.264 / yuv420p / 30fps / no-audio / even dims)
        |
        v
- IPC set-video
+  temporary storage file (.tmp.<pid>.<time>.<hash>.mp4)
+       |
+       v
+  atomic rename + metadata install
+       |
+       v
+  IPC set-video
 ```
 
-### 10.1 ffprobe validation
+### 10.1 Container & Stream Validation (`ffprobe`)
 
-Check at minimum:
+Validation checks:
+-   container format (`format_name` must contain `mp4` or `mov` for direct bypass)
+-   video stream presence
+-   width & height (enforcing 4K boundary: `width <= 3840 && height <= 2160`)
+-   frame rate (<= 30 fps)
+-   codec (`h264`, `avc1`)
+-   pixel format (`yuv420p`)
+-   interlacing/progressive status
 
--   stream exists
--   video stream exists
--   width
--   height
--   frame rate
--   codec/container information
--   interlacing/progressive status where available
--   duration
--   audio presence
+**Strict Container Rule**: Even if a file's video stream is H.264 / `yuv420p`, if its container is MKV, WebM, AVI, etc., it does **not** bypass transcoding. It is transcoded into a genuine MP4 container to avoid storing mislabeled container payloads as `.mp4`.
 
-The importer should reject or normalize unsupported inputs
-deterministically.
+### 10.2 Normalization (`ffmpeg`)
 
-### 10.2 ffmpeg output
-
-The default output should be equivalent in intent to:
-
+Normalized profile:
 ``` text
-MP4
-H.264
-yuv420p
-30 fps
-no audio
-no subtitles
-even dimensions
+Container: MP4
+Codec: H.264 (libx264)
+Pixel format: yuv420p
+Framerate: 30 fps
+Audio: stripped (-an)
+Subtitles: stripped (-sn)
+Dimensions: normalized to even numbers
 ```
 
-The exact CRF/preset values should be configurable constants in code and
-documented.
+Executed directly with argument arrays (no `sh -c` shell interpolation).
 
-Odd dimensions may be normalized to even dimensions before H.264
-encoding.
+### 10.3 Failure Recovery & Dual-Store Integrity
 
-### 10.3 Conversion failure
-
-A failed conversion must:
-
--   remove the incomplete temporary output
--   preserve the previous valid cache
--   return a user-readable error
--   retain detailed diagnostic logs separately
+- Incomplete temporary files (`.tmp.*`) are removed immediately on failure.
+- When installing into persistent storage, the normalized video file and metadata JSON are installed atomically. If metadata writing fails, the video file is cleanly rolled back and deleted to ensure no orphaned video files without metadata exist.
 
 ------------------------------------------------------------------------
 
-## 11. Cache Design
+## 11. Persistent Storage Design
 
-Recommended structure:
+Structure (`~/.local/share/fluffy/storage/`):
 
 ``` text
-~/.cache/my-wallpaper/
-├── objects/
-│   ├── <content-or-source-hash>.mp4
+~/.local/share/fluffy/storage/
+├── videos/
+│   ├── <content-sha256-hash>.mp4
 │   └── ...
 └── metadata/
-    ├── <id>.json
+    ├── <content-sha256-hash>.json
     └── ...
 ```
 
-Metadata should include:
+Metadata schema:
 
 ``` json
 {
@@ -617,17 +612,12 @@ Metadata should include:
     "max_width": 3840,
     "max_height": 2160
   },
-  "output": "<cache-id>.mp4"
+  "output": "<content-sha256-hash>.mp4"
 }
 ```
 
-Temporary files must use unique names.
-
-Do not use a single fixed `.tmp` filename because concurrent imports can
-collide.
-
-The final cache file should be installed atomically using rename
-semantics.
+Temporary files use collision-free unique names (`.tmp.<pid>.<timestamp>.<hash>.mp4`).
+The final cache file is installed atomically using rename semantics.
 
 ------------------------------------------------------------------------
 
@@ -774,26 +764,32 @@ GUI crash must not stop playback.
 
 ------------------------------------------------------------------------
 
-## 16. systemd --user
+## 16. systemd --user Integration
 
-Preferred unit concept:
+Unit configuration:
 
-``` text
-my-wallpaper.service
-```
+``` ini
+[Unit]
+Description=Fluffy Video Wallpaper Manager Daemon
+Documentation=https://github.com/wammed/Fluffy
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
 
-Properties to consider:
-
-``` text
-ExecStart=/path/to/wallpaper-daemon run
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/fluffy daemon
 Restart=on-failure
+RestartSec=3
+TimeoutStopSec=5
+PassEnvironment=WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_RUNTIME_DIR XDG_SESSION_TYPE
+Environment=RUST_LOG=fluffy=info
+
+[Install]
+WantedBy=graphical-session.target
 ```
 
-The exact unit should be generated/documented only after the daemon CLI
-is stable.
-
-The GUI may detect a missing daemon and request/start the user service,
-then retry IPC.
+Using `%h/.local/bin/fluffy daemon` ensures the service starts reliably regardless of `systemd --user` environment `PATH` variations.
 
 ------------------------------------------------------------------------
 
@@ -1011,7 +1007,7 @@ Implemented and verified:
   - Immediate cleanup of temporary files on conversion failure.
 - [x] Persistent storage & compatibility bypass (`src/cache/manager.rs` & `src/cache/probe.rs`):
   - Moved from ephemeral cache to persistent storage (`~/.local/share/fluffy/storage/videos/<sha256>.mp4`).
-  - Compatible video profile bypass: videos matching H.264/`yuv420p`/<=30fps/even dims/<=4K bypass ffmpeg entirely and copy directly (instantaneous, 0 CPU).
+  - Compatible video profile bypass: videos matching H.264/`yuv420p`/<=30fps/even dims/<=4K bypass ffmpeg entirely and copy directly (instantaneous, no transcoding CPU cost).
   - Non-compliant videos (HEVC, AV1, 60fps+, odd dimensions) undergo automatic normalization in background worker threads.
   - Transparent initial layer surface base buffer (`0x00000000`), preserving the desktop wallpaper during initial conversion without black screen interruptions.
   - Asynchronous normalization via dedicated worker threads keeps Wayland event dispatch and ongoing video loops running smoothly.
@@ -1150,3 +1146,32 @@ Primary references used during design validation:
 
 These should be rechecked against the exact dependency versions used by
 the implementation.
+
+------------------------------------------------------------------------
+
+## 26. Logging and Diagnostics Policy
+
+To maintain high observability and stability across long-running daemon sessions, the following logging and error handling standards must be followed for all existing and newly added code:
+
+### 26.1 Structured Logging via `tracing`
+* **Daemon & Library Modules**: All resident daemon, playback, cache, Wayland, and IPC server modules **must strictly use `tracing::*`** (`error!`, `warn!`, `info!`, `debug!`, `trace!`).
+* **Zero `println!` / `eprintln!` in Resident Code**: Direct standard output writes are forbidden in daemon code. Only CLI subcommands (`fluffy status`, `fluffy import`, etc.) may print formatted terminal text for human CLI users.
+* **Standard Event Levels**:
+  * `info!`: Lifecycle milestones (daemon startup/shutdown, video import, cache hit/install, playback state changes, output add/remove).
+  * `warn!`: Recoverable issues (stale generation discards, socket cleanup warnings, compositor layer close).
+  * `error!`: Actionable failures (ffprobe failure, ffmpeg transcode failure, pipeline bus error).
+  * `debug!` / `trace!`: Verbose protocol events (IPC request arrival, preroll timings, benign cleanups).
+
+### 26.2 Diagnostic Context
+Include structured fields in tracing macros where available:
+* `operation`: e.g. `"pipeline_switch"`, `"ffmpeg_transcode"`, `"cache_lookup"`, `"job_complete"`.
+* Identifiers: `output = %name`, `generation`, `job_id`, `client_id = client_id.0`.
+* Avoid redundant spamming of oversized raw paths in log bodies; use structured keys.
+
+### 26.3 Error Propagation & Ignored Operations
+* Never use silent `let _ = ...` on filesystem mutations, pipeline state transitions, or IPC responses without justification.
+* Benign cleanups (e.g., temporary file deletion or disconnected client writes) must be logged at `debug!` or `trace!` level with context, or accompanied by an explicit code comment documenting why it is safe to ignore.
+
+### 26.4 GUI Resilience
+* The GUI client (`fluffy-settings`) must never panic (`.unwrap()`) on daemon connection or IPC failures.
+* Failures must be classified into structured categories (`connection unavailable`, `timeout`, `daemon stopped`, `invalid response`) and gracefully presented to the user.

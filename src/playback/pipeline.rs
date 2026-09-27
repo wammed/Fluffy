@@ -56,7 +56,9 @@ impl PipelineHandle {
         unsafe {
             overlay.set_window_handle(raw_surface_ptr);
         }
-        let _ = overlay.set_render_rectangle(0, 0, width as i32, height as i32);
+        if let Err(e) = overlay.set_render_rectangle(0, 0, width as i32, height as i32) {
+            tracing::trace!(operation = "render_rectangle", error = ?e, "[Pipeline] Initial overlay set_render_rectangle ignored (benign on some sinks)");
+        }
 
         // 3. Create playbin with pre-configured sink and silent audio sink
         let audio_sink = gstreamer::ElementFactory::make("fakesink")
@@ -77,7 +79,6 @@ impl PipelineHandle {
             .build()
             .map_err(|e| FluffyError::Playback(format!("Failed to create playbin: {e}")))?;
 
-
         let pipeline = playbin
             .dynamic_cast::<gstreamer::Pipeline>()
             .map_err(|_| FluffyError::Playback("playbin is not a Pipeline".into()))?;
@@ -88,6 +89,14 @@ impl PipelineHandle {
             .bus()
             .ok_or_else(|| FluffyError::Playback("Failed to get pipeline bus".into()))?;
 
+        tracing::info!(
+            operation = "pipeline_create",
+            video = ?video_path,
+            width,
+            height,
+            "[Pipeline] Created GStreamer playbin pipeline with waylandsink"
+        );
+
         Ok(Self {
             pipeline,
             sink,
@@ -95,5 +104,20 @@ impl PipelineHandle {
             bus,
             gst_wl_context,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pipeline_creation_nonexistent_file_fails() {
+        let _ = gstreamer::init();
+        let nonexistent = Path::new("/tmp/fluffy_nonexistent_pipeline_video.mp4");
+        let res = unsafe {
+            PipelineHandle::new(std::ptr::null_mut(), 0, 1920, 1080, nonexistent)
+        };
+        assert!(res.is_err());
     }
 }

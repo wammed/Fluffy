@@ -26,7 +26,7 @@ pub struct WallpaperSurface {
 
 impl LayerShellHandler for WaylandState {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
-        println!("[Wayland] Layer surface closed by compositor");
+        tracing::warn!(operation = "layer_closed", "[Wayland] Layer surface closed by compositor");
     }
 
     fn configure(
@@ -38,7 +38,7 @@ impl LayerShellHandler for WaylandState {
         _serial: u32,
     ) {
         let (w, h) = configure.new_size;
-        println!("[Wayland] Compositor configured layer size: {w}x{h}");
+        tracing::debug!(operation = "layer_configure", width = w, height = h, "[Wayland] Compositor configured layer size");
     }
 }
 
@@ -177,13 +177,37 @@ impl WallpaperSurface {
     }
 
 
+    pub fn update_geometry(
+        &mut self,
+        ctx: &mut WaylandContext,
+        new_width: u32,
+        new_height: u32,
+    ) -> Result<bool> {
+        if self.width == new_width && self.height == new_height {
+            return Ok(false);
+        }
+
+        self.width = new_width;
+        self.height = new_height;
+
+        self.attach_initial_base_buffer()?;
+        if let Err(e) = ctx.conn.flush() {
+            tracing::warn!(operation = "layer_geometry_flush", error = %e, "[Wayland] Failed to flush connection during geometry update");
+        }
+        Ok(true)
+    }
+
     pub fn destroy(&mut self, ctx: &mut WaylandContext) {
         if let Some(layer) = self.layer_surface.take() {
             layer.wl_surface().attach(None, 0, 0);
             layer.commit();
             drop(layer);
         }
-        let _ = ctx.event_queue.roundtrip(&mut ctx.state);
-        let _ = ctx.conn.flush();
+        if let Err(e) = ctx.event_queue.roundtrip(&mut ctx.state) {
+            tracing::debug!(operation = "layer_destroy_roundtrip", error = %e, "[Wayland] Roundtrip error during layer surface destruction");
+        }
+        if let Err(e) = ctx.conn.flush() {
+            tracing::debug!(operation = "layer_destroy_flush", error = %e, "[Wayland] Flush error during layer surface destruction");
+        }
     }
 }

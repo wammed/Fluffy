@@ -157,10 +157,10 @@ fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("fluffy=info,gstreamer=warn"));
 
-    tracing_subscriber::registry()
+    let _ = tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer())
-        .init();
+        .try_init();
 }
 
 fn cmd_daemon(args: &[String]) -> Result<()> {
@@ -228,7 +228,17 @@ fn cmd_status(args: &[String]) -> Result<()> {
     println!("Fluffy Daemon Status (v{})", status.daemon_version);
     println!("Connected Socket: {:?}", socket);
     if status.is_converting {
-        println!("Background Task:  ⚙️  Optimizing / Transcoding video: {}", status.converting_file.as_deref().unwrap_or("active"));
+        if !status.active_jobs.is_empty() {
+            println!("Background Tasks: ⚙️  {} active conversion job(s):", status.active_jobs.len());
+            for job in &status.active_jobs {
+                println!(
+                    "  - [Job #{}] (gen: {}, state: {}): {}",
+                    job.job_id, job.generation, job.state, job.source
+                );
+            }
+        } else {
+            println!("Background Task:  ⚙️  Optimizing / Transcoding video: {}", status.converting_file.as_deref().unwrap_or("active"));
+        }
     } else {
         println!("Background Task:  Idle (No active conversion)");
     }

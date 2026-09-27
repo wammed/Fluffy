@@ -58,21 +58,51 @@ pub fn transcode_video<P: AsRef<Path>, Q: AsRef<Path>>(
     ])
     .arg(output);
 
-    println!(
-        "[Normalize] Transcoding {:?} -> {:?} (target: {}x{}, {} fps, CRF {})",
-        input, output, target_w, target_h, DEFAULT_FPS, DEFAULT_CRF
+    tracing::info!(
+        operation = "ffmpeg_transcode",
+        input = ?input,
+        output = ?output,
+        width = target_w,
+        height = target_h,
+        fps = DEFAULT_FPS,
+        crf = DEFAULT_CRF,
+        "[Normalize] Transcoding video to standardized storage format"
     );
 
     let output_res = cmd.output().map_err(|e| {
         // Clean up partial output on execution failure
-        let _ = fs::remove_file(output);
+        if let Err(cleanup_err) = fs::remove_file(output)
+            && cleanup_err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::debug!(
+                operation = "cleanup",
+                error = %cleanup_err,
+                output = ?output,
+                "[Normalize] Failed to remove partial file on ffmpeg execution error"
+            );
+        }
+        tracing::error!(operation = "ffmpeg_exec", error = %e, "[Normalize] Failed to execute ffmpeg");
         FluffyError::Conversion(format!("Failed to execute ffmpeg: {e}"))
     })?;
 
     if !output_res.status.success() {
         // Ensure failed partial conversion is removed
-        let _ = fs::remove_file(output);
+        if let Err(cleanup_err) = fs::remove_file(output)
+            && cleanup_err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::debug!(
+                operation = "cleanup",
+                error = %cleanup_err,
+                output = ?output,
+                "[Normalize] Failed to remove partial file on ffmpeg exit failure"
+            );
+        }
         let stderr = String::from_utf8_lossy(&output_res.stderr);
+        tracing::error!(
+            operation = "ffmpeg_transcode",
+            stderr = %stderr.trim(),
+            "[Normalize] ffmpeg transcoding failed"
+        );
         return Err(FluffyError::Conversion(format!(
             "ffmpeg transcoding failed: {}",
             stderr.trim()

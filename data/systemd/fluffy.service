@@ -7,8 +7,8 @@ Requisite=graphical-session.target
 
 [Service]
 Type=simple
-# Attempt to run from user cargo bin or system path
-ExecStart=/usr/bin/env fluffy daemon
+# Run binary installed in user's local bin (~/.local/bin/fluffy)
+ExecStart=%h/.local/bin/fluffy daemon
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=5

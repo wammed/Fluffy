@@ -21,6 +21,16 @@ pub struct WaylandContext {
     pub state: WaylandState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputGeometry {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub scale: i32,
+    pub logical_position: (i32, i32),
+    pub description: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum WaylandOutputEvent {
     AddedOrUpdated(wl_output::WlOutput),
@@ -206,13 +216,44 @@ impl WaylandContext {
             .and_then(|info| info.name)
     }
 
+    pub fn output_geometry(&self, output: &wl_output::WlOutput) -> Option<OutputGeometry> {
+        let info = self.state.output_state.info(output)?;
+        let name = info.name.clone().unwrap_or_else(|| "unknown".into());
+        let (width, height) = info
+            .logical_size
+            .map(|(w, h)| (w.max(1) as u32, h.max(1) as u32))
+            .or_else(|| {
+                info.modes
+                    .iter()
+                    .find(|m| m.current)
+                    .map(|m| (m.dimensions.0.max(1) as u32, m.dimensions.1.max(1) as u32))
+            })
+            .unwrap_or((2560, 1440));
+        let scale = info.scale_factor;
+        let logical_position = info.location;
+        let description = info.description.clone();
+
+        Some(OutputGeometry {
+            name,
+            width,
+            height,
+            scale,
+            logical_position,
+            description,
+        })
+    }
+
     pub fn take_output_events(&mut self) -> Vec<WaylandOutputEvent> {
         std::mem::take(&mut self.state.output_events)
     }
 
     pub fn dispatch_pending(&mut self) -> Result<()> {
-        let _ = self.event_queue.dispatch_pending(&mut self.state);
-        let _ = self.conn.flush();
+        if let Err(e) = self.event_queue.dispatch_pending(&mut self.state) {
+            tracing::warn!(error = %e, "[Wayland] Error dispatching pending events");
+        }
+        if let Err(e) = self.conn.flush() {
+            tracing::warn!(error = %e, "[Wayland] Error flushing connection during dispatch_pending");
+        }
         Ok(())
     }
 }

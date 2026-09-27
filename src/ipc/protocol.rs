@@ -56,15 +56,10 @@ impl RequestEnvelope {
     }
 
     pub fn validate(&self) -> Result<()> {
-        match self.command {
-            CommandType::SetVideo => {
-                if self.path.is_none() {
-                    return Err(FluffyError::Ipc(
-                        "'set_video' command requires a valid 'path' field".to_string(),
-                    ));
-                }
-            }
-            _ => {}
+        if self.command == CommandType::SetVideo && self.path.is_none() {
+            return Err(FluffyError::Ipc(
+                "'set_video' command requires a valid 'path' field".to_string(),
+            ));
         }
         Ok(())
     }
@@ -107,6 +102,66 @@ pub struct OutputStatus {
     pub current_video: Option<String>,
     pub generation: u64,
     pub loop_count: u64,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    #[serde(default)]
+    pub scale: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputApplyResult {
+    pub name: String,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetVideoResult {
+    pub generation: u64,
+    pub video_path: PathBuf,
+    pub outputs: Vec<OutputApplyResult>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobState {
+    Queued,
+    Probing,
+    Transcoding,
+    Installing,
+    Completed,
+    Failed,
+    Cancelled,
+    Stale,
+}
+
+impl std::fmt::Display for JobState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Queued => write!(f, "queued"),
+            Self::Probing => write!(f, "probing"),
+            Self::Transcoding => write!(f, "transcoding"),
+            Self::Installing => write!(f, "installing"),
+            Self::Completed => write!(f, "completed"),
+            Self::Failed => write!(f, "failed"),
+            Self::Cancelled => write!(f, "cancelled"),
+            Self::Stale => write!(f, "stale"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversionJobInfo {
+    pub job_id: u64,
+    pub source: String,
+    pub generation: u64,
+    pub target_output: Option<String>,
+    pub state: JobState,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +172,8 @@ pub struct DaemonStatus {
     pub is_converting: bool,
     #[serde(default)]
     pub converting_file: Option<String>,
+    #[serde(default)]
+    pub active_jobs: Vec<ConversionJobInfo>,
 }
 
 
@@ -179,9 +236,20 @@ mod tests {
                 current_video: Some("/path/to/test.mp4".to_string()),
                 generation: 1,
                 loop_count: 5,
+                width: 2560,
+                height: 1440,
+                scale: 1,
             }],
             is_converting: false,
             converting_file: None,
+            active_jobs: vec![ConversionJobInfo {
+                job_id: 1,
+                source: "/path/to/test.mp4".to_string(),
+                generation: 1,
+                target_output: Some("DP-1".to_string()),
+                state: JobState::Transcoding,
+                error: None,
+            }],
         };
 
         let val = serde_json::to_value(&status).unwrap();

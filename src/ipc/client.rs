@@ -10,12 +10,18 @@ use super::protocol::{CommandType, DaemonStatus, RequestEnvelope, ResponseEnvelo
 
 pub struct IpcClient {
     socket_path: PathBuf,
+    timeout: Duration,
 }
 
 impl IpcClient {
     pub fn new<P: AsRef<Path>>(socket_path: P) -> Self {
+        Self::with_timeout(socket_path, Duration::from_secs(5))
+    }
+
+    pub fn with_timeout<P: AsRef<Path>>(socket_path: P, timeout: Duration) -> Self {
         Self {
             socket_path: socket_path.as_ref().to_path_buf(),
+            timeout,
         }
     }
 
@@ -28,8 +34,8 @@ impl IpcClient {
             ))
         })?;
 
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_read_timeout(Some(self.timeout))?;
+        stream.set_write_timeout(Some(self.timeout))?;
 
         let mut data = serde_json::to_vec(request)?;
         data.push(b'\n');
@@ -139,5 +145,203 @@ impl IpcClient {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::{BufRead, BufReader, Write},
+        os::unix::net::UnixListener,
+        sync::{
+            atomic::{AtomicBool, AtomicU64, Ordering},
+            Arc,
+        },
+        thread,
+    };
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+    fn temp_socket_path() -> PathBuf {
+        let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let p = std::env::temp_dir().join(format!("fluffy_test_{}_{}.sock", std::process::id(), id));
+        let _ = std::fs::remove_file(&p);
+        p
+    }
+
+    #[test]
+    fn test_ipc_daemon_unavailable() {
+        let p = temp_socket_path();
+        let client = IpcClient::with_timeout(&p, Duration::from_millis(100));
+        let res = client.status();
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("Failed to connect to daemon"));
+    }
+
+    #[test]
+    fn test_ipc_timeout() {
+        let p = temp_socket_path();
+        let listener = UnixListener::bind(&p).unwrap();
+        let running = Arc::new(AtomicBool::new(true));
+        let running_clone = running.clone();
+
+        // Server accepts connection but sleeps without replying
+        let srv = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                // Sleep longer than client timeout
+                thread::sleep(Duration::from_millis(500));
+            }
+            running_clone.store(false, Ordering::SeqCst);
+        });
+
+        let client = IpcClient::with_timeout(&p, Duration::from_millis(100));
+        let start = std::time::Instant::now();
+        let res = client.status();
+        let elapsed = start.elapsed();
+
+        assert!(res.is_err(), "Request should fail due to timeout");
+        assert!(
+            elapsed >= Duration::from_millis(90),
+            "Elapsed {:?} should be around 100ms",
+            elapsed
+        );
+        assert!(
+            elapsed < Duration::from_millis(450),
+            "Should have timed out well before server finishes"
+        );
+
+        let _ = srv.join();
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn test_ipc_normal_response() {
+        let p = temp_socket_path();
+        let listener = UnixListener::bind(&p).unwrap();
+
+        let srv = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+
+            let status_json = serde_json::json!({
+                "daemon_version": "0.1.0",
+                "outputs": [{
+                    "name": "DP-1",
+                    "state": "Playing",
+                    "current_video": "/tmp/test.mp4",
+                    "generation": 1,
+                    "loop_count": 0,
+                    "width": 2560,
+                    "height": 1440,
+                    "scale": 1
+                }],
+                "is_converting": false,
+                "converting_file": null,
+                "active_jobs": []
+            });
+
+            let resp = ResponseEnvelope::success(1, Some(status_json));
+            let mut resp_data = serde_json::to_vec(&resp).unwrap();
+            resp_data.push(b'\n');
+            stream.write_all(&resp_data).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let client = IpcClient::with_timeout(&p, Duration::from_millis(500));
+        let status = client.status().unwrap();
+        assert_eq!(status.daemon_version, "0.1.0");
+        assert_eq!(status.outputs.len(), 1);
+        assert_eq!(status.outputs[0].name, "DP-1");
+        assert_eq!(status.outputs[0].width, 2560);
+        assert_eq!(status.outputs[0].height, 1440);
+
+        let _ = srv.join();
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn test_ipc_repeated_polling() {
+        let p = temp_socket_path();
+        let listener = UnixListener::bind(&p).unwrap();
+
+        let srv = thread::spawn(move || {
+            for i in 1..=5 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+
+                let status_json = serde_json::json!({
+                    "daemon_version": "0.1.0",
+                    "outputs": [],
+                    "is_converting": false,
+                    "converting_file": null,
+                    "active_jobs": []
+                });
+
+                let resp = ResponseEnvelope::success(i, Some(status_json));
+                let mut resp_data = serde_json::to_vec(&resp).unwrap();
+                resp_data.push(b'\n');
+                stream.write_all(&resp_data).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+
+        let client = IpcClient::with_timeout(&p, Duration::from_millis(500));
+        for _ in 0..5 {
+            let status = client.status();
+            assert!(status.is_ok());
+        }
+
+        let _ = srv.join();
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn test_ipc_concurrent_requests() {
+        let p = temp_socket_path();
+        let listener = UnixListener::bind(&p).unwrap();
+
+        let srv = thread::spawn(move || {
+            for _ in 0..6 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(&mut stream);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let req: RequestEnvelope = serde_json::from_str(line.trim()).unwrap();
+
+                let resp = ResponseEnvelope::success(req.request_id, None);
+                let mut resp_data = serde_json::to_vec(&resp).unwrap();
+                resp_data.push(b'\n');
+                stream.write_all(&resp_data).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+
+        let mut handles = Vec::new();
+        for id in 1..=6 {
+            let sock = p.clone();
+            handles.push(thread::spawn(move || {
+                let client = IpcClient::with_timeout(&sock, Duration::from_millis(1000));
+                let req = RequestEnvelope::new(id, CommandType::Pause);
+                let resp = client.send(&req).unwrap();
+                assert!(resp.success);
+                assert_eq!(resp.request_id, id);
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let _ = srv.join();
+        let _ = std::fs::remove_file(&p);
     }
 }

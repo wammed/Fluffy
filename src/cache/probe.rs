@@ -18,6 +18,7 @@ pub struct VideoStreamInfo {
     pub fps: f64,
     pub duration_secs: Option<f64>,
     pub has_audio: bool,
+    pub container_format: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -39,14 +40,18 @@ struct FfprobeStream {
 
 #[derive(Deserialize)]
 struct FfprobeFormat {
+    format_name: Option<String>,
     duration: Option<String>,
 }
 
 pub fn probe_video<P: AsRef<Path>>(path: P) -> Result<VideoStreamInfo> {
     let path = path.as_ref();
     if !path.exists() {
+        tracing::warn!(operation = "ffprobe", path = ?path, "[Probe] Video file does not exist");
         return Err(FluffyError::Probe(format!("File does not exist: {:?}", path)));
     }
+
+    tracing::debug!(operation = "ffprobe", path = ?path, "[Probe] Probing video file with ffprobe");
 
     let output = Command::new("ffprobe")
         .args([
@@ -59,10 +64,19 @@ pub fn probe_video<P: AsRef<Path>>(path: P) -> Result<VideoStreamInfo> {
         ])
         .arg(path)
         .output()
-        .map_err(|e| FluffyError::Probe(format!("Failed to execute ffprobe: {e}")))?;
+        .map_err(|e| {
+            tracing::error!(operation = "ffprobe", error = %e, path = ?path, "[Probe] Failed to execute ffprobe process");
+            FluffyError::Probe(format!("Failed to execute ffprobe: {e}"))
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(
+            operation = "ffprobe",
+            path = ?path,
+            stderr = %stderr.trim(),
+            "[Probe] ffprobe exited with error"
+        );
         return Err(FluffyError::Probe(format!(
             "ffprobe exited with error: {}",
             stderr.trim()
@@ -70,7 +84,10 @@ pub fn probe_video<P: AsRef<Path>>(path: P) -> Result<VideoStreamInfo> {
     }
 
     let parsed: FfprobeOutput = serde_json::from_slice(&output.stdout)
-        .map_err(|e| FluffyError::Probe(format!("Failed to parse ffprobe json: {e}")))?;
+        .map_err(|e| {
+            tracing::warn!(operation = "ffprobe_parse", path = ?path, error = %e, "[Probe] Failed to parse ffprobe json output");
+            FluffyError::Probe(format!("Failed to parse ffprobe json: {e}"))
+        })?;
 
     let streams = parsed
         .streams
@@ -106,6 +123,8 @@ pub fn probe_video<P: AsRef<Path>>(path: P) -> Result<VideoStreamInfo> {
         .iter()
         .any(|s| s.codec_type.as_deref() == Some("audio"));
 
+    let container_format = parsed.format.as_ref().and_then(|f| f.format_name.clone());
+
     let info = VideoStreamInfo {
         width,
         height,
@@ -114,9 +133,21 @@ pub fn probe_video<P: AsRef<Path>>(path: P) -> Result<VideoStreamInfo> {
         fps,
         duration_secs,
         has_audio,
+        container_format,
     };
 
     validate_video_dimensions(info.width, info.height)?;
+
+    tracing::debug!(
+        operation = "probe_success",
+        codec = %info.codec,
+        container = ?info.container_format,
+        width = info.width,
+        height = info.height,
+        fps = info.fps,
+        has_audio = info.has_audio,
+        "[Probe] Probed video stream info successfully"
+    );
 
     Ok(info)
 }
@@ -149,20 +180,33 @@ fn parse_frame_rate(fps_str: &str) -> f64 {
 }
 
 impl VideoStreamInfo {
+    /// Checks whether the container format matches the MP4 / QuickTime profile family ("mp4", "mov", "m4a").
+    pub fn is_compatible_container(&self) -> bool {
+        match &self.container_format {
+            Some(fmt) => fmt.split(',').any(|part| {
+                let p = part.trim();
+                p == "mp4" || p == "mov" || p == "m4a"
+            }),
+            None => false,
+        }
+    }
+
     /// Checks whether the video is already fully compliant with the playback profile:
+    /// - Container Format: MP4 / QuickTime ("mp4", "mov", "m4a")
     /// - Video Codec: H.264 ("h264" or "avc1")
     /// - Pixel Format: "yuv420p"
     /// - Even Dimensions: width and height are divisible by 2
     /// - Dimensions within 4K boundary: width <= 3840 && height <= 2160
     /// - Frame Rate: <= 30.5 fps (supports 23.976, 24, 25, 29.97, 30 fps)
     pub fn is_compatible_profile(&self) -> bool {
+        let container_ok = self.is_compatible_container();
         let codec_ok = self.codec == "h264" || self.codec == "avc1";
         let pix_fmt_ok = self.pix_fmt.as_deref() == Some("yuv420p");
-        let dims_even = (self.width % 2 == 0) && (self.height % 2 == 0);
+        let dims_even = self.width.is_multiple_of(2) && self.height.is_multiple_of(2);
         let dims_ok = self.width <= MAX_WIDTH && self.height <= MAX_HEIGHT && self.width > 0 && self.height > 0;
         let fps_ok = self.fps <= 30.5;
 
-        codec_ok && pix_fmt_ok && dims_even && dims_ok && fps_ok
+        container_ok && codec_ok && pix_fmt_ok && dims_even && dims_ok && fps_ok
     }
 }
 
@@ -200,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_is_compatible_profile() {
-        let valid = VideoStreamInfo {
+        let valid_mp4 = VideoStreamInfo {
             width: 1920,
             height: 1080,
             codec: "h264".to_string(),
@@ -208,28 +252,78 @@ mod tests {
             fps: 30.0,
             duration_secs: Some(10.0),
             has_audio: false,
+            container_format: Some("mov,mp4,m4a,3gp,3g2,mj2".to_string()),
         };
-        assert!(valid.is_compatible_profile());
+        // MP4 / H.264 / yuv420p -> compatible
+        assert!(valid_mp4.is_compatible_profile());
+
+        // MKV / H.264 / yuv420p -> incompatible (must be transcoded to MP4)
+        let mut mkv_h264 = valid_mp4.clone();
+        mkv_h264.container_format = Some("matroska,webm".to_string());
+        assert!(!mkv_h264.is_compatible_profile());
+
+        // WebM / VP9 -> incompatible
+        let mut webm_vp9 = valid_mp4.clone();
+        webm_vp9.container_format = Some("matroska,webm".to_string());
+        webm_vp9.codec = "vp9".to_string();
+        assert!(!webm_vp9.is_compatible_profile());
+
+        // MP4 / H.265 (HEVC) -> incompatible
+        let mut mp4_hevc = valid_mp4.clone();
+        mp4_hevc.codec = "hevc".to_string();
+        assert!(!mp4_hevc.is_compatible_profile());
+
+        // MP4 / H.264 / yuv444p -> incompatible
+        let mut mp4_yuv444p = valid_mp4.clone();
+        mp4_yuv444p.pix_fmt = Some("yuv444p".to_string());
+        assert!(!mp4_yuv444p.is_compatible_profile());
+
+        // MP4 / H.264 / out-of-range FPS (60fps) -> incompatible
+        let mut mp4_high_fps = valid_mp4.clone();
+        mp4_high_fps.fps = 60.0;
+        assert!(!mp4_high_fps.is_compatible_profile());
+
+        // Missing container format -> incompatible
+        let mut no_container = valid_mp4.clone();
+        no_container.container_format = None;
+        assert!(!no_container.is_compatible_profile());
 
         // Odd dimension -> incompatible
-        let mut odd = valid.clone();
+        let mut odd = valid_mp4.clone();
         odd.width = 1921;
         assert!(!odd.is_compatible_profile());
+    }
 
-        // 60 fps -> incompatible
-        let mut high_fps = valid.clone();
-        high_fps.fps = 60.0;
-        assert!(!high_fps.is_compatible_profile());
+    #[test]
+    fn test_probe_nonexistent_file_fails() {
+        let nonexistent = Path::new("/tmp/fluffy_definitely_nonexistent_video.mp4");
+        let res = probe_video(nonexistent);
+        assert!(res.is_err());
+        match res {
+            Err(FluffyError::Probe(msg)) => {
+                assert!(msg.contains("does not exist"));
+            }
+            other => panic!("Expected FluffyError::Probe, got {other:?}"),
+        }
+    }
 
-        // HEVC codec -> incompatible
-        let mut hevc = valid.clone();
-        hevc.codec = "hevc".to_string();
-        assert!(!hevc.is_compatible_profile());
+    #[test]
+    fn test_probe_corrupted_file_fails() {
+        let temp_dir = std::env::temp_dir().join(format!("fluffy_corrupted_test_{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let corrupt_path = temp_dir.join("corrupted.mp4");
+        std::fs::write(&corrupt_path, b"not a real video file content").unwrap();
 
-        // Pixel format yuv422p -> incompatible
-        let mut yuv422 = valid.clone();
-        yuv422.pix_fmt = Some("yuv422p".to_string());
-        assert!(!yuv422.is_compatible_profile());
+        let res = probe_video(&corrupt_path);
+        assert!(res.is_err());
+        match res {
+            Err(FluffyError::Probe(msg)) => {
+                assert!(msg.contains("ffprobe") || msg.contains("No streams") || msg.contains("json"));
+            }
+            other => panic!("Expected FluffyError::Probe, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 
