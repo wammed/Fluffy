@@ -1,7 +1,6 @@
 # COSMIC Video Wallpaper Manager --- Session Handover
 
-**Status:** Architecture/design phase --- implementation has not
-started.\
+**Status:** Phase 1 PoC Completed (Real-hardware-tested) --- Moving to Phase 2 (Playback Core / Daemon Skeleton).\
 **Last updated:** 2026-09-27\
 **Next owner:** Implementation agent / developer
 
@@ -41,37 +40,42 @@ The daemon must remain alive after the GUI exits.
 -   Daemon / GUI separation chosen.
 -   Unix-domain-socket IPC chosen.
 -   GStreamer chosen for playback.
--   `waylandsink` chosen as the initial Wayland sink candidate.
+-   `waylandsink` chosen as the Wayland sink candidate.
 -   `wlr-layer-shell` BACKGROUND chosen for desktop placement.
--   `wp_viewporter` chosen for compositor-side surface scaling.
 -   ffprobe/ffmpeg chosen for media validation and normalization.
--   H.264/yuv420p/MP4/no-audio/30fps defined as the default playback
-    profile.
--   3840x2160 maximum input dimensions defined.
--   One output = one layer surface = one playback pipeline defined for
-    v1.
--   `systemd --user` identified as the preferred daemon lifecycle
-    manager.
--   Performance numbers were deliberately downgraded from hard
-    guarantees to measurable targets.
+-   H.264/yuv420p/MP4/no-audio/30fps defined as the default playback profile.
+-   **Step 1 (Environment audit): [Real-hardware-tested]**
+    - Arch Linux, COSMIC Desktop / cosmic-comp (`XDG_CURRENT_DESKTOP=COSMIC`, `XDG_SESSION_TYPE=wayland`, `WAYLAND_DISPLAY=wayland-1`).
+    - GPU: NVIDIA GeForce RTX 3080 (Driver 615.71.09), Outputs: DP-1 (2560x1440), DP-2 (2560x1440).
+    - Rust 1.98.1, GStreamer 1.28.7, ffmpeg / ffprobe available.
+-   **Step 2 (Layer-shell BACKGROUND surface): [Real-hardware-tested]**
+    - Verified `zwlr_layer_surface_v1` on `Layer::Background` covering 2560x1440 output with solid color.
+-   **Step 3 (GStreamer waylandsink integration): [Real-hardware-tested]**
+    - **CRITICAL ARCHITECTURE GATE PASSED & VISUALLY VERIFIED ON REAL HARDWARE**:
+      - GStreamer `waylandsink` successfully renders H.264 video into Rust-created `wlr-layer-shell` surface under COSMIC.
+      - Tested & visually verified on both `DP-1` and `DP-2` (2560x1440, NVIDIA RTX 3080).
+      - Video playback, counter animation, and frame updates fully operational.
+      - Verified `gst_wl_display_handle_context_new` passing Wayland display context to pipeline/sink.
+      - Verified `GstVideoOverlay::set_window_handle` and `GstVideoOverlay::set_render_rectangle(0, 0, w, h)`.
+      - Crucial finding: Parent layer surface must map an initial base frame for the subsurface video to become visible.
+      - Layer placement: `Layer::Bottom` verified to display directly above `cosmic-bg` desktop wallpaper.
+      - Automatic hardware acceleration via `nvh264dec` confirmed working under `playbin`.
+-   **Step 4 (Looping without recreating surface): [Real-hardware-tested]**
+    - Verified EOS detection and seek to 0 (`pipeline.seek_simple`) without flickering or surface teardown.
+    - Clean teardown on timeout/Ctrl+C verified on real hardware.
 
 ### Not completed
 
-There is currently no confirmed implementation.
+The following have not yet been implemented / proven on real hardware:
 
-The following have not yet been proven on real hardware:
-
--   GStreamer `waylandsink` rendering into the intended layer-shell
-    surface.
--   DMABUF path under COSMIC/cosmic-comp.
--   hardware decoder selection and fallback behavior.
--   viewporter behavior with the chosen rendering path.
--   multi-output playback.
--   output hotplug/reconfiguration.
--   daemon IPC.
--   cache conversion pipeline.
--   GUI.
--   performance measurements.
+-   `wp_viewporter` dynamic scaling behavior under COSMIC.
+-   multi-output concurrent playback manager.
+-   output hotplug/reconfiguration handling.
+-   daemon Unix domain socket IPC.
+-   video cache / ffmpeg normalization pipeline.
+-   GUI (libcosmic).
+-   systemd --user service unit.
+-   systematic performance benchmark measurements.
 
 ------------------------------------------------------------------------
 

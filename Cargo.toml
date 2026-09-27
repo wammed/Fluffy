@@ -4,3 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["calloop", "pkg-config", "xkbcommon"] }
+wayland-client = { version = "0.31.15", features = ["system"] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+gstreamer = { version = "0.25.4", features = ["v1_28"] }
+gstreamer-video = { version = "0.25.4", features = ["v1_28"] }
+ctrlc = "3.4"
+
+
