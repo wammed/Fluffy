@@ -201,6 +201,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-video",
  "smithay-client-toolkit",
+ "thiserror",
  "wayland-client",
  "wayland-protocols-wlr",
 ]

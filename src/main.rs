@@ -1,3 +1,7 @@
+pub mod error;
+pub mod playback;
+pub mod wayland;
+
 use std::{
     env,
     path::PathBuf,
@@ -5,427 +9,149 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::Instant,
 };
 
-use gstreamer::glib::translate::FromGlibPtrFull;
-use gstreamer::prelude::*;
-use gstreamer_video::prelude::*;
-use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
-    delegate_registry,
-    output::{OutputHandler, OutputState},
-    registry::{ProvidesRegistryState, RegistryState},
-    registry_handlers,
-    shell::{
-        wlr_layer::{
-            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
-            LayerSurfaceConfigure,
-        },
-        WaylandSurface,
-    },
-    shm::{slot::SlotPool, Shm, ShmHandler},
-};
-use wayland_client::{
-    globals::registry_queue_init,
-    protocol::{wl_output, wl_shm, wl_surface},
-    Connection, Proxy, QueueHandle,
+use smithay_client_toolkit::shell::wlr_layer::Layer;
+
+use crate::{
+    error::Result,
+    playback::{GstVideoPlayer, VideoPlayer},
+    wayland::{WallpaperSurface, WaylandContext},
 };
 
-unsafe extern "C" {
-    fn gst_wl_display_handle_context_new(
-        display: *mut std::ffi::c_void,
-    ) -> *mut gstreamer::ffi::GstContext;
-}
+fn main() -> Result<()> {
+    println!("=== Fluffy Video Wallpaper Manager (Phase 2 Playback Core) ===");
 
-struct WallpaperApp {
-    registry_state: RegistryState,
-    output_state: OutputState,
-    shm: Shm,
-    layer_surface: Option<LayerSurface>,
-    pool: SlotPool,
-    width: u32,
-    height: u32,
-    configured: bool,
-    exit: Arc<AtomicBool>,
-}
+    let args: Vec<String> = env::args().collect();
+    let requested_output_name = args.get(1).filter(|a| !a.starts_with("--"));
+    let continuous_loop = args.iter().any(|a| a == "--loop");
 
-impl ProvidesRegistryState for WallpaperApp {
-    fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry_state
-    }
-    registry_handlers![OutputState];
-}
+    // 1. Initialize Wayland Context
+    println!("[Main] Initializing Wayland connection...");
+    let mut wayland_ctx = WaylandContext::init()?;
 
-impl OutputHandler for WallpaperApp {
-    fn output_state(&mut self) -> &mut OutputState {
-        &mut self.output_state
+    let outputs = wayland_ctx.outputs();
+    println!("[Main] Discovered Wayland outputs:");
+    for (name, _) in &outputs {
+        println!("  - {name}");
     }
 
-    fn new_output(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
-    ) {
-    }
-
-    fn update_output(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
-    ) {
-    }
-
-    fn output_destroyed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
-    ) {
-    }
-}
-
-impl CompositorHandler for WallpaperApp {
-    fn scale_factor_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
-    ) {
-    }
-
-    fn transform_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_transform: wayland_client::protocol::wl_output::Transform,
-    ) {
-    }
-
-    fn frame(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _time: u32,
-    ) {
-    }
-
-    fn surface_enter(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
-
-    fn surface_leave(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
-}
-
-impl ShmHandler for WallpaperApp {
-    fn shm_state(&mut self) -> &mut Shm {
-        &mut self.shm
-    }
-}
-
-impl LayerShellHandler for WallpaperApp {
-    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
-        println!("[PoC] Layer surface closed by compositor");
-        self.exit.store(true, Ordering::SeqCst);
-    }
-
-    fn configure(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _layer: &LayerSurface,
-        configure: LayerSurfaceConfigure,
-        _serial: u32,
-    ) {
-        let (width, height) = configure.new_size;
-        println!("[PoC] Compositor configured layer surface size: {width}x{height}");
-        self.width = if width == 0 { 2560 } else { width };
-        self.height = if height == 0 { 1440 } else { height };
-        self.configured = true;
-    }
-}
-
-impl WallpaperApp {
-    fn attach_initial_frame(&mut self) {
-        let Some(layer_surface) = self.layer_surface.as_ref() else {
-            return;
-        };
-
-        let width = self.width;
-        let height = self.height;
-        let stride = width as i32 * 4;
-
-        let (buffer, canvas) = self
-            .pool
-            .create_buffer(
-                width as i32,
-                height as i32,
-                stride,
-                wl_shm::Format::Argb8888,
-            )
-            .expect("Failed to create initial shm buffer");
-
-        // Transparent background so the video subsurface is directly visible
-        for chunk in canvas.chunks_exact_mut(4) {
-            chunk[0] = 0;
-            chunk[1] = 0;
-            chunk[2] = 0;
-            chunk[3] = 0;
-        }
-
-        layer_surface
-            .wl_surface()
-            .damage_buffer(0, 0, width as i32, height as i32);
-        buffer
-            .attach_to(layer_surface.wl_surface())
-            .expect("Buffer attach failed");
-        layer_surface.commit();
-
-        println!("[PoC] Initial base frame mapped on layer surface ({width}x{height})");
-    }
-}
-
-delegate_registry!(WallpaperApp);
-smithay_client_toolkit::delegate_dispatch2!(WallpaperApp);
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("=== Step 3: GStreamer + Wayland layer-shell PoC ===");
-
-    let requested_output_name = env::args().nth(1);
-    let requested_layer = if env::args().any(|a| a == "--bottom") {
-        println!("[PoC] Using Layer::Bottom (above cosmic-bg wallpaper)");
-        Layer::Bottom
+    // Select target output
+    let target_output = if let Some(req_name) = requested_output_name {
+        wayland_ctx.find_output(req_name)
     } else {
-        println!("[PoC] Using Layer::Background");
-        Layer::Background
+        outputs.first().map(|(_, o)| o.clone())
     };
 
-    // 1. Initialize GStreamer
-    gstreamer::init()?;
-    println!("[PoC] GStreamer initialized");
+    let target_output_name = target_output.as_ref().and_then(|o| {
+        wayland_ctx
+            .state
+            .output_state
+            .info(o)
+            .and_then(|i| i.name)
+    });
+    println!("[Main] Selected target output: {:?}", target_output_name);
 
-    // 2. Initialize Wayland connection
-    let conn = Connection::connect_to_env()?;
-    let (globals, mut event_queue) = registry_queue_init(&conn)?;
-    let qh = event_queue.handle();
+    // 2. Create Wallpaper Surface on Layer::Bottom (non-destructive overlay)
+    println!("[Main] Creating wallpaper surface on Layer::Bottom...");
+    let mut surface = WallpaperSurface::new(&mut wayland_ctx, target_output.as_ref(), Layer::Bottom)?;
+    println!(
+        "[Main] Wallpaper surface initialized (raw ptr: 0x{:x}, geometry: {}x{})",
+        surface.raw_surface_ptr, surface.width, surface.height
+    );
 
-    let registry_state = RegistryState::new(&globals);
-    let output_state = OutputState::new(&globals, &qh);
-    let compositor = CompositorState::bind(&globals, &qh)?;
-    let layer_shell = LayerShell::bind(&globals, &qh)?;
-    let shm = Shm::bind(&globals, &qh)?;
-    let pool = SlotPool::new(2560 * 1440 * 4, &shm)?;
+    // 3. Initialize GStreamer Video Player
+    println!("[Main] Initializing GStreamer playback core...");
+    let mut player = GstVideoPlayer::new(
+        wayland_ctx.raw_display_ptr(),
+        surface.raw_surface_ptr,
+        surface.width,
+        surface.height,
+    )?;
 
+    // 4. Handle graceful termination (Ctrl+C)
     let exit_flag = Arc::new(AtomicBool::new(false));
-
-    // Handle Ctrl+C gracefully
     {
         let exit_flag = exit_flag.clone();
         ctrlc::set_handler(move || {
-            println!("\n[PoC] Received Ctrl+C, exiting gracefully...");
+            println!("\n[Main] Received shutdown signal (Ctrl+C)...");
             exit_flag.store(true, Ordering::SeqCst);
         })
         .ok();
     }
 
-    let mut app = WallpaperApp {
-        registry_state,
-        output_state,
-        shm,
-        layer_surface: None,
-        pool,
-        width: 2560,
-        height: 1440,
-        configured: false,
-        exit: exit_flag.clone(),
-    };
+    let video1 = PathBuf::from("test.mp4");
+    let video2 = PathBuf::from("test2.mp4");
 
-    // Populate outputs
-    event_queue.roundtrip(&mut app)?;
+    if continuous_loop {
+        // Continuous loop mode
+        println!("[Main] Starting continuous loop mode with {:?}...", video1);
+        player.play(&video1)?;
 
-    let outputs: Vec<_> = app.output_state.outputs().collect();
-    for (i, output) in outputs.iter().enumerate() {
-        let name = app
-            .output_state
-            .info(output)
-            .and_then(|info| info.name)
-            .unwrap_or_else(|| "unknown".into());
-        println!("  Output #{i}: {name}");
-    }
-
-    // Select target output based on CLI arg or default to first
-    let target_output = if let Some(req_name) = &requested_output_name {
-        outputs.iter().find(|o| {
-            app.output_state
-                .info(o)
-                .and_then(|i| i.name)
-                .as_deref()
-                == Some(req_name.as_str())
-        }).cloned()
+        while !exit_flag.load(Ordering::SeqCst) {
+            wayland_ctx.dispatch_pending()?;
+            if !player.poll_events()? {
+                eprintln!("[Main] Playback failed");
+                break;
+            }
+        }
     } else {
-        outputs.first().cloned()
-    };
+        // Phase 2 Lifecycle Verification Scenario:
+        // Play video1 (4s) -> Pause (2s) -> Resume (3s) -> Switch to video2 (4s) -> Done
+        println!("[Main] Starting Phase 2 Playback Lifecycle Test Scenario:");
+        println!("       Step 1: Play 'test.mp4' (4 seconds)");
+        println!("       Step 2: Pause playback (2 seconds)");
+        println!("       Step 3: Resume playback (3 seconds)");
+        println!("       Step 4: Switch video to 'test2.mp4' (4 seconds)");
+        println!("       Step 5: Clean teardown");
 
-    let target_name = target_output
-        .as_ref()
-        .and_then(|o| app.output_state.info(o)?.name.clone());
-    println!("[PoC] Target output for video wallpaper: {:?}", target_name);
+        // Step 1: Play video1
+        player.play(&video1)?;
+        let mut phase = 1;
+        let mut phase_start = Instant::now();
 
-    let surface = compositor.create_surface(&qh);
-    let raw_surface_ptr = surface.id().as_ptr() as usize;
-    println!("[PoC] wl_surface raw pointer: 0x{raw_surface_ptr:x}");
+        while !exit_flag.load(Ordering::SeqCst) {
+            wayland_ctx.dispatch_pending()?;
+            if !player.poll_events()? {
+                break;
+            }
 
-    let layer = layer_shell.create_layer_surface(
-        &qh,
-        surface,
-        requested_layer,
-        Some("fluffy_wallpaper_gst_poc"),
-        target_output.as_ref(),
-    );
-
-    layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-    layer.set_exclusive_zone(-1);
-    layer.commit();
-
-    app.layer_surface = Some(layer);
-
-    // Initial roundtrip for layer surface configure
-    event_queue.roundtrip(&mut app)?;
-
-    // Map parent surface so Compositor will render child subsurface
-    app.attach_initial_frame();
-    event_queue.roundtrip(&mut app)?;
-
-    // 3. Prepare GStreamer Wayland Context BEFORE any pipeline creation
-    let display_ptr = conn.backend().display_ptr() as *mut std::ffi::c_void;
-    println!("[PoC] wl_display raw pointer: {display_ptr:?}");
-    let gst_wl_context_raw = unsafe { gst_wl_display_handle_context_new(display_ptr) };
-    let gst_wl_context: gstreamer::Context =
-        unsafe { FromGlibPtrFull::from_glib_full(gst_wl_context_raw) };
-
-    // 4. Create waylandsink and set context immediately
-    let sink = gstreamer::ElementFactory::make("waylandsink")
-        .name("sink")
-        .build()?;
-    sink.set_context(&gst_wl_context);
-
-    let overlay = sink
-        .clone()
-        .dynamic_cast::<gstreamer_video::VideoOverlay>()
-        .expect("waylandsink does not implement VideoOverlay");
-
-    // Pre-configure overlay handle & size
-    unsafe {
-        overlay.set_window_handle(raw_surface_ptr);
-    }
-    let (w, h) = (app.width as i32, app.height as i32);
-    let _ = overlay.set_render_rectangle(0, 0, w, h);
-    println!("[PoC] overlay set_window_handle & set_render_rectangle(0, 0, {w}, {h}) configured");
-
-    // 5. Create playbin with the pre-configured sink
-    let video_path = PathBuf::from("test.mp4").canonicalize()?;
-    println!("[PoC] Target video file: {:?}", video_path);
-
-    let playbin = gstreamer::ElementFactory::make("playbin")
-        .property("uri", format!("file://{}", video_path.display()))
-        .property("video-sink", &sink)
-        .build()?;
-    let pipeline = playbin.dynamic_cast::<gstreamer::Pipeline>().unwrap();
-    pipeline.set_context(&gst_wl_context);
-
-    let bus = pipeline.bus().expect("Failed to get bus");
-
-    // 6. Start playback
-    pipeline.set_state(gstreamer::State::Playing)?;
-    println!("[PoC] GStreamer pipeline state -> PLAYING");
-
-    let loop_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
-
-    println!("[PoC] Video playback running in loop. Press Ctrl+C to stop (runs up to 15s)...");
-    let start_time = std::time::Instant::now();
-
-    while !exit_flag.load(Ordering::SeqCst) && start_time.elapsed().as_secs() < 15 {
-        // Dispatch Wayland events
-        let _ = event_queue.dispatch_pending(&mut app);
-        let _ = conn.flush();
-
-        // Process GStreamer bus messages with 50ms timeout
-        while let Some(msg) = bus.timed_pop(gstreamer::ClockTime::from_mseconds(50)) {
-            use gstreamer::MessageView;
-            match msg.view() {
-                MessageView::Eos(..) => {
-                    let count = loop_count.fetch_add(1, Ordering::SeqCst) + 1;
-                    println!("[PoC] EOS reached! Looping (count: {count}). Seeking to 0...");
-                    let _ = pipeline.seek_simple(
-                        gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::KEY_UNIT,
-                        gstreamer::ClockTime::ZERO,
-                    );
+            match phase {
+                1 if phase_start.elapsed().as_secs() >= 4 => {
+                    println!("\n[Scenario] Step 2: Testing PAUSE...");
+                    player.pause()?;
+                    phase = 2;
+                    phase_start = Instant::now();
                 }
-                MessageView::Error(err) => {
-                    eprintln!(
-                        "[PoC] GStreamer Error: {} ({:?})",
-                        err.error(),
-                        err.debug()
-                    );
-                    exit_flag.store(true, Ordering::SeqCst);
+                2 if phase_start.elapsed().as_secs() >= 2 => {
+                    println!("\n[Scenario] Step 3: Testing RESUME...");
+                    player.resume()?;
+                    phase = 3;
+                    phase_start = Instant::now();
+                }
+                3 if phase_start.elapsed().as_secs() >= 3 => {
+                    println!("\n[Scenario] Step 4: Testing VIDEO SWITCH to 'test2.mp4'...");
+                    player.play(&video2)?;
+                    phase = 4;
+                    phase_start = Instant::now();
+                }
+                4 if phase_start.elapsed().as_secs() >= 4 => {
+                    println!("\n[Scenario] Step 5: Scenario completed successfully!");
                     break;
-                }
-                MessageView::NeedContext(msg) => {
-                    let ctx_type = msg.context_type();
-                    if ctx_type == "GstWaylandDisplayHandleContextType"
-                        || ctx_type == "GstWlDisplayHandleContextType"
-                    {
-                        if let Some(src) = msg.src() {
-                            if let Ok(elem) = src.clone().downcast::<gstreamer::Element>() {
-                                elem.set_context(&gst_wl_context);
-                            }
-                        }
-                    }
-                }
-                MessageView::Element(msg) => {
-                    if gstreamer_video::is_video_overlay_prepare_window_handle_message(msg) {
-                        println!("[PoC] prepare-window-handle: refreshing handle & rect");
-                        unsafe {
-                            overlay.set_window_handle(raw_surface_ptr);
-                        }
-                        let _ = overlay.set_render_rectangle(0, 0, w, h);
-                    }
                 }
                 _ => {}
             }
         }
     }
 
-    // 7. Graceful teardown
-    println!("[PoC] Stopping pipeline...");
-    let _ = pipeline.set_state(gstreamer::State::Null);
+    // 5. Clean teardown
+    println!("[Main] Stopping playback...");
+    player.stop()?;
 
-    println!("[PoC] Cleaning up Wayland layer surface...");
-    if let Some(layer) = app.layer_surface.take() {
-        layer.wl_surface().attach(None, 0, 0);
-        layer.commit();
-        drop(layer);
-    }
-    let _ = event_queue.roundtrip(&mut app);
-    let _ = conn.flush();
+    println!("[Main] Destroying Wayland surface and restoring desktop wallpaper...");
+    surface.destroy(&mut wayland_ctx);
 
-    println!("[PoC] Completed gracefully.");
+    println!("[Main] Fluffy exited gracefully.");
     Ok(())
 }

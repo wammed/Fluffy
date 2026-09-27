@@ -955,14 +955,16 @@ H.264 MP4 loop playback
 - Seamless loop playback without recreating surface verified via EOS `seek_simple(ZERO)`.
 - Clean exit without crashing or hanging confirmed.
 
-### Phase 2 --- Playback core
+### Phase 2 --- Playback core [DONE - Real-hardware-tested]
 
-Add:
-
--   loop
--   pause/resume
--   output lifecycle
--   pipeline state management
+Implemented and verified:
+- [x] Codebase modularization: `src/error.rs`, `src/wayland/`, `src/playback/`.
+- [x] `VideoPlayer` abstraction trait & `GstVideoPlayer` implementation.
+- [x] State management (`Playing`, `Paused`, `Stopped`).
+- [x] Pause / Resume lifecycle verified without frame drops or tearing.
+- [x] Dynamic video switching without destroying layer-shell surface verified.
+- [x] Automatic seamless loop recovery via EOS `seek_simple(ZERO)`.
+- [x] Clean exit signal handling (SIGINT/Ctrl+C) and surface teardown.
 
 ### Phase 3 --- IPC
 

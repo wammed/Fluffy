@@ -1,6 +1,6 @@
 # COSMIC Video Wallpaper Manager --- Session Handover
 
-**Status:** Phase 1 PoC Completed (Real-hardware-tested) --- Moving to Phase 2 (Playback Core / Daemon Skeleton).\
+**Status:** Phase 2 (Playback Core) Completed (Real-hardware-tested) --- Moving to Phase 3 (IPC).\
 **Last updated:** 2026-09-27\
 **Next owner:** Implementation agent / developer
 
@@ -63,17 +63,25 @@ The daemon must remain alive after the GUI exits.
 -   **Step 4 (Looping without recreating surface): [Real-hardware-tested]**
     - Verified EOS detection and seek to 0 (`pipeline.seek_simple`) without flickering or surface teardown.
     - Clean teardown on timeout/Ctrl+C verified on real hardware.
+-   **Step 6 (Playback abstraction & Lifecycle): [Real-hardware-tested]**
+    - Architecture modularized cleanly: `src/error.rs`, `src/wayland/`, `src/playback/`.
+    - `VideoPlayer` trait and `GstVideoPlayer` implementation verified on real hardware:
+      - `play(video)`: Instant startup.
+      - `pause()`: Freezes video smoothly.
+      - `resume()`: Continues playback without frame drop.
+      - Dynamic video switching: Replaces pipeline with new video without destroying Wayland layer surface.
+      - `stop()`: Clean pipeline release and state transition.
 
 ### Not completed
 
 The following have not yet been implemented / proven on real hardware:
 
--   `wp_viewporter` dynamic scaling behavior under COSMIC.
--   multi-output concurrent playback manager.
+-   daemon Unix domain socket IPC (Phase 3).
+-   multi-output concurrent playback manager (Phase 5).
 -   output hotplug/reconfiguration handling.
--   daemon Unix domain socket IPC.
--   video cache / ffmpeg normalization pipeline.
--   GUI (libcosmic).
+-   video cache / ffmpeg normalization pipeline (Phase 4).
+-   `wp_viewporter` dynamic scaling behavior under COSMIC.
+-   GUI (libcosmic - Phase 6).
 -   systemd --user service unit.
 -   systematic performance benchmark measurements.
 
