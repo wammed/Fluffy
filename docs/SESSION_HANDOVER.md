@@ -210,9 +210,9 @@ Following external technical reviews, the following architectural hardening item
 - **Fully Async Settings GUI IPC**: `fluffy-settings` runs all IPC queries and commands through asynchronous tasks (`iced::Task`), keeping the user interface completely fluid and non-blocking under all conditions.
 
 ### 3.4 Brand Identity & Icon Redesign (IP Compliance Clearance)
-- **Application Icon Redesign (`images/fluffy-icon.svg`)**: Replaced placeholder icon with custom branding synthesizing the "F" glyph and official COSMIC DE logo with a non-glossy, matte finish.
+- **Application Icon Redesign (`images/fluffy-icon.svg`)**: Revised icon to remove official COSMIC branding resemblance, establishing an independent design centered on a custom flowing "F" frame with minimal display and play functional glyphs in a matte finish.
 - **Full Asset Synchronization**: Synchronized `images/fluffy-icon.svg` with desktop assets (`data/icons/hicolor/scalable/apps/fluffy-icon.svg`, `com.github.fluffy.Fluffy.svg`, `com.github.wammed.fluffy.settings.svg`), compiled Settings GUI binary (`include_bytes!`), and local user icon cache.
-- **IP Compliance Audit (`IP_COMPLIANCE.md`)**: Conducted visual competitive search and trademark clearance against industry peers (Adobe Creative Cloud, Papyrus), establishing originality and trademark distinction.
+- **IP Due Diligence Record (`IP_COMPLIANCE.md` / `IP_COMPLIANCE.ja.md`)**: Documented provenance, third-party similarity review history, and independence from official third-party trademarks.
 
 ------------------------------------------------------------------------
 
@@ -252,7 +252,8 @@ Fluffy/
 ├── build.rs
 ├── README.md                   (English root documentation)
 ├── README.ja.md                (Japanese root documentation)
-├── IP_COMPLIANCE.md            (Icon provenance, originality & IP compliance audit)
+├── IP_COMPLIANCE.md            (Icon provenance & IP due diligence record: English)
+├── IP_COMPLIANCE.ja.md         (Icon provenance & IP due diligence record: Japanese)
 ├── images/
 │   ├── fluffy-icon.svg         (App icon master SVG)
 │   ├── fluffy-banner.png       (Project header banner PNG)
