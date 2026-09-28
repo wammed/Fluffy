@@ -19,6 +19,7 @@ Fluffy は、Pop!_OS COSMIC Desktop および Linux Wayland コンポジター�
 | **[技術仕様書 (Technical Design)](TECHNICAL_DESIGN.ja.md)** | システム全体構造、IPC JSON-RPC 仕様、キャッシュポリシー、Layer-shell 統合 | 開発者、アーキテクト、技術的コントリビューター |
 | **[セッション引継ぎ書 (Session Handover)](SESSION_HANDOVER.ja.md)** | 開発ロードマップ、全フェーズ進捗、実機検証エビデンスマトリクス | 実装継続を担当する開発者 |
 | **[性能ベンチマーク報告書 (Benchmark Report)](BENCHMARK_REPORT.ja.md)** | 実機実測 CPU%、メモリ RSS、GPU 3D 利用率、NVDEC デコーダ負荷 | パフォーマンスエンジニア、システム最適化担当者 |
+| **[アイコン設計 & IPコンプライアンス監査](../IP_COMPLIANCE.ja.md)** | アプリアイコンの由来、独自性検証、商標・知的財産権クリアランス記録 | パッケージメンテナ、デスクトップインテグレーター、コントリビューター |
 
 ---
 
@@ -26,7 +27,8 @@ Fluffy は、Pop!_OS COSMIC Desktop および Linux Wayland コンポジター�
 
 ### 1. インストールとデスクトップ環境への統合
 - **クイックインストール**: [ルート README: クイックスタート](../README.ja.md#-クイックスタート) を参照してください。
-- **systemd `--user` サービス登録**: `scripts/install-desktop-integration.sh` を実行して、`fluffy.service` および `com.github.fluffy.Fluffy.desktop` を自動配置します。
+- **アプリアイコンとデスクトップ意匠**: `images/fluffy-icon.svg` および `data/icons/hicolor/scalable/apps/` にスケーラブル SVG アイコンが配置されています。権利クリアランス詳細は [アイコン設計 & IP監査](../IP_COMPLIANCE.ja.md) を参照してください。
+- **systemd `--user` サービス登録**: `scripts/install-desktop-integration.sh` を実行して、`fluffy.service`、デスクトップエントリ、およびアプリアイコンを自動配置します。
 - **systemctl による運用管理**: [ルート README: デスクトップ導入](../README.ja.md#%EF%B8%8F-デスクトップ--systemd-ユーザーサービス導入) にてコマンド一覧を確認できます。
 
 ### 2. CLI および GUI からの壁紙操作

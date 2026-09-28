@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="./images/fluffy-icon.svg" width="96" height="96" alt="Fluffy Icon" />
+
 # 🎬 Fluffy
 ### COSMIC Desktop / Wayland 向け軽量・非破壊・ハードウェアアクセラレーション動画壁紙マネージャー
 
@@ -19,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="docs/PORTAL.ja.md">📚 ドキュメントポータル</a> | <a href="docs/BENCHMARK_REPORT.ja.md">📊 性能ベンチマーク報告書</a>
+  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="docs/PORTAL.ja.md">📚 ドキュメントポータル</a> | <a href="docs/BENCHMARK_REPORT.ja.md">📊 性能ベンチマーク報告書</a> | <a href="IP_COMPLIANCE.ja.md">🎨 アイコン設計 & IP監査</a>
 </p>
 
 </div>

@@ -209,6 +209,11 @@ Following external technical reviews, the following architectural hardening item
 - **Best-Effort All-Output Semantics**: Multi-display video updates apply on a best-effort basis; partial failures (e.g. DP-1 succeeds, DP-2 fails) are reported per-output via `SetVideoResult` (`outputs: Vec<OutputApplyResult>`), avoiding fragile full-pipeline rollbacks.
 - **Fully Async Settings GUI IPC**: `fluffy-settings` runs all IPC queries and commands through asynchronous tasks (`iced::Task`), keeping the user interface completely fluid and non-blocking under all conditions.
 
+### 3.4 Brand Identity & Icon Redesign (IP Compliance Clearance)
+- **Application Icon Redesign (`images/fluffy-icon.svg`)**: Replaced placeholder icon with custom branding synthesizing the "F" glyph and official COSMIC DE logo with a non-glossy, matte finish.
+- **Full Asset Synchronization**: Synchronized `images/fluffy-icon.svg` with desktop assets (`data/icons/hicolor/scalable/apps/fluffy-icon.svg`, `com.github.fluffy.Fluffy.svg`, `com.github.wammed.fluffy.settings.svg`), compiled Settings GUI binary (`include_bytes!`), and local user icon cache.
+- **IP Compliance Audit (`IP_COMPLIANCE.md`)**: Conducted visual competitive search and trademark clearance against industry peers (Adobe Creative Cloud, Papyrus), establishing originality and trademark distinction.
+
 ------------------------------------------------------------------------
 
 ## 4. Key Architectural Decisions Established
@@ -245,9 +250,31 @@ Fluffy/
 ├── Cargo.toml                  (Features: default (daemon/cli), gui (libcosmic))
 ├── Cargo.lock
 ├── build.rs
+├── README.md                   (English root documentation)
+├── README.ja.md                (Japanese root documentation)
+├── IP_COMPLIANCE.md            (Icon provenance, originality & IP compliance audit)
+├── images/
+│   ├── fluffy-icon.svg         (App icon master SVG)
+│   ├── fluffy-banner.png       (Project header banner PNG)
+│   └── fluffy-banner.svg       (Project header banner SVG)
+├── data/
+│   ├── systemd/
+│   │   └── fluffy.service      (systemd --user service unit)
+│   ├── desktop/
+│   │   └── com.github.fluffy.Fluffy.desktop (COSMIC Desktop application entry)
+│   └── icons/
+│       └── hicolor/scalable/apps/
+│           ├── fluffy-icon.svg
+│           ├── com.github.fluffy.Fluffy.svg
+│           └── com.github.wammed.fluffy.settings.svg
+├── scripts/
+│   ├── install-desktop-integration.sh (Desktop integration & icon installer)
+│   └── benchmark.sh            (Hardware benchmark suite)
 ├── docs/
-│   ├── TECHNICAL_DESIGN.md
-│   └── SESSION_HANDOVER.md
+│   ├── PORTAL.md / PORTAL.ja.md
+│   ├── BENCHMARK_REPORT.md / BENCHMARK_REPORT.ja.md
+│   ├── TECHNICAL_DESIGN.md / TECHNICAL_DESIGN.ja.md
+│   └── SESSION_HANDOVER.md / SESSION_HANDOVER.ja.md
 ├── src/
 │   ├── lib.rs                  (Exposes modules for binaries & GUI)
 │   ├── main.rs                 (CLI subcommands & daemon entry)

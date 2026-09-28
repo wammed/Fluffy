@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="./images/fluffy-icon.svg" width="96" height="96" alt="Fluffy Icon" />
+
 # 🎬 Fluffy
 ### Lightweight, Non-Destructive Video Wallpaper Manager for COSMIC Desktop / Wayland
 
@@ -19,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="docs/PORTAL.md">📚 Documentation Portal</a> | <a href="docs/BENCHMARK_REPORT.md">📊 Performance Benchmarks</a>
+  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="docs/PORTAL.md">📚 Documentation Portal</a> | <a href="docs/BENCHMARK_REPORT.md">📊 Performance Benchmarks</a> | <a href="IP_COMPLIANCE.md">🎨 Icon & IP Compliance</a>
 </p>
 
 </div>

@@ -196,6 +196,11 @@ COSMIC Desktop / Wayland 向けの軽量ループ動画壁紙マネージャー�
 - **全画面適用のベストエフォート (Best-Effort) 仕様**: 全画面壁紙適用時に一部のモニターでエラーが発生しても、成功したモニターは新動画へ遷移し、失敗したモニターは旧動画を維持。各画面の個別結果を `SetVideoResult` (`outputs: Vec<OutputApplyResult>`) で返却。
 - **設定 GUI の完全非同期 IPC**: `fluffy-settings` の IPC 通信を `iced::Task` による完全非同期処理とし、デーモン高負荷時や変換中も GUI が絶対にフリーズしない応答性を実現。
 
+### 3.4 ブランド意匠・アプリアイコン刷新 & IP監査適合
+- **アプリアイコン意匠刷新 (`images/fluffy-icon.svg`)**: COSMIC デスクトップのマット質感および "F" グリフと公式 COSMIC ロゴを融合させた新アイコンへ刷新。
+- **全システムアセット同期**: `data/icons/hicolor/scalable/apps/` (`fluffy-icon.svg`, `com.github.fluffy.Fluffy.svg`, `com.github.wammed.fluffy.settings.svg`)、設定 GUI 内蔵バイナリ (`include_bytes!`)、およびユーザー環境キャッシュ (`~/.local/share/icons/hicolor/`) を完全同期。
+- **IPコンプライアンス監査書 (`IP_COMPLIANCE.md`)**: 画像検索および商標類似度検査を実施し、競合（Adobe Creative Cloud, Papyrus 等）との明確な差異と独自性を確認・文書化。
+
 ------------------------------------------------------------------------
 
 ## 4. 確立された主要アーキテクチャ方針
@@ -233,11 +238,21 @@ Fluffy/
 ├── build.rs
 ├── README.md                   (英語ルートドキュメント)
 ├── README.ja.md                (日本語ルートドキュメント)
+├── IP_COMPLIANCE.md            (アイコン意匠設計・独自性検証・IP監査記録)
+├── images/
+│   ├── fluffy-icon.svg         (アプリアイコン マスター SVG)
+│   ├── fluffy-banner.png       (プロジェクトヘッダーバナー PNG)
+│   └── fluffy-banner.svg       (プロジェクトヘッダーバナー SVG)
 ├── data/
 │   ├── systemd/
 │   │   └── fluffy.service      (systemd --user サービスユニット)
-│   └── desktop/
-│       └── com.github.fluffy.Fluffy.desktop (COSMIC アプリケーションエントリ)
+│   ├── desktop/
+│   │   └── com.github.fluffy.Fluffy.desktop (COSMIC アプリケーションエントリ)
+│   └── icons/
+│       └── hicolor/scalable/apps/
+│           ├── fluffy-icon.svg
+│           ├── com.github.fluffy.Fluffy.svg
+│           └── com.github.wammed.fluffy.settings.svg
 ├── scripts/
 │   ├── install-desktop-integration.sh (自動インストーラー)
 │   └── benchmark.sh            (実機性能ベンチマークスイート)
