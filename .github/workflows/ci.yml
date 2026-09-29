@@ -15,7 +15,7 @@ env:
 jobs:
   check:
     name: Rust checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout
@@ -23,12 +23,17 @@ jobs:
 
       - name: Install system dependencies
         run: |
-            sudo apt-get update
-            sudo apt-get install -y \
-                libxkbcommon-dev \
-                libglib2.0-dev \
-                libgstreamer1.0-dev \
-                libgstreamer-plugins-base1.0-dev
+          sudo apt-get update
+          sudo apt-get install -y \
+              libxkbcommon-dev \
+              libglib2.0-dev \
+              libgstreamer1.0-dev \
+              libgstreamer-plugins-base1.0-dev
+
+      - name: Verify GStreamer
+        run: |
+          pkg-config --modversion gstreamer-1.0
+          pkg-config --modversion gstreamer-video-1.0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
