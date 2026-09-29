@@ -19,7 +19,9 @@ Fluffy は、Pop!_OS COSMIC Desktop および Linux Wayland コンポジター�
 | **[技術仕様書 (Technical Design)](TECHNICAL_DESIGN.ja.md)** | システム全体構造、IPC JSON-RPC 仕様、キャッシュポリシー、Layer-shell 統合 | 開発者、アーキテクト、技術的コントリビューター |
 | **[セッション引継ぎ書 (Session Handover)](SESSION_HANDOVER.ja.md)** | 開発ロードマップ、全フェーズ進捗、実機検証エビデンスマトリクス | 実装継続を担当する開発者 |
 | **[性能ベンチマーク報告書 (Benchmark Report)](BENCHMARK_REPORT.ja.md)** | 実機実測 CPU%、メモリ RSS、GPU 3D 利用率、NVDEC デコーダ負荷 | パフォーマンスエンジニア、システム最適化担当者 |
-| **[アイコン設計 & IPコンプライアンス監査](../IP_COMPLIANCE.ja.md)** | アプリアイコンの由来、独自性検証、商標・知的財産権クリアランス記録 | パッケージメンテナ、デスクトップインテグレーター、コントリビューター |
+| **[知的財産権 (IP) デューデリジェンス記録書](../legal/IP_COMPLIANCE.ja.md)** | アプリアイコンの由来、独自性検証、商標・知的財産権クリアランス記録 | パッケージメンテナ、デスクトップインテグレーター、コントリビューター |
+| **[サードパーティライセンス監査記録](../legal/THIRD_PARTY_LICENSES.ja.md)** | Rust 依存クレート、GStreamer & FFmpeg ランタイムライセンス、下流パッケージング方針 | パッケージャー、法務監査担当者、ディストリビューター |
+| **[アイコン意匠設計・IPレビュー履歴](../legal/ICON_DESIGN_HISTORY.ja.md)** | 4アプリ横断アイコン創出経緯、AI プロンプト履歴、反復監査ログ | メンテナ、リポジトリアーキビスト |
 
 ---
 
@@ -27,7 +29,7 @@ Fluffy は、Pop!_OS COSMIC Desktop および Linux Wayland コンポジター�
 
 ### 1. インストールとデスクトップ環境への統合
 - **クイックインストール**: [ルート README: クイックスタート](../README.ja.md#-クイックスタート) を参照してください。
-- **アプリアイコンとデスクトップ意匠**: `images/fluffy-icon.svg` および `data/icons/hicolor/scalable/apps/` にスケーラブル SVG アイコンが配置されています。権利クリアランス詳細は [アイコン設計 & IP監査](../IP_COMPLIANCE.ja.md) を参照してください。
+- **アプリアイコンとデスクトップ意匠**: `images/fluffy-icon.svg` および `data/icons/hicolor/scalable/apps/` にスケーラブル SVG アイコンが配置されています。権利クリアランス詳細は [知的財産権 (IP) デューデリジェンス記録書](../legal/IP_COMPLIANCE.ja.md) を参照してください。
 - **systemd `--user` サービス登録**: `scripts/install-desktop-integration.sh` を実行して、`fluffy.service`、デスクトップエントリ、およびアプリアイコンを自動配置します。
 - **systemctl による運用管理**: [ルート README: デスクトップ導入](../README.ja.md#%EF%B8%8F-デスクトップ--systemd-ユーザーサービス導入) にてコマンド一覧を確認できます。
 
@@ -45,6 +47,11 @@ Fluffy は、Pop!_OS COSMIC Desktop および Linux Wayland コンポジター�
 ### 4. 性能実績と実機検証エビデンスの確認
 - **ベンチマーク実測値**: [BENCHMARK_REPORT.ja.md](BENCHMARK_REPORT.ja.md) にて、NVIDIA RTX 3080 ＋ 1440p デュアルディスプレイ環境下での 1080p / 1440p / 4K 負荷データを閲覧できます。
 - **検証レベル**: [SESSION_HANDOVER.ja.md: セクション 2](SESSION_HANDOVER.ja.md) にて Phase 1〜7 の実機検証済みステータスを確認できます。
+
+### 5. 法務・ライセンス・知的財産 (IP) プロヴェナンス
+- **プロジェクトライセンス**: Fluffy は MIT License ([LICENSE](../LICENSE)) のもとで公開されています。
+- **サードパーティおよび外部ランタイムライセンス**: Fluffy は GStreamer や FFmpeg を同梱しません。詳細なランタイム境界および `cargo-deny` 監査結果は [サードパーティライセンス監査記録](../legal/THIRD_PARTY_LICENSES.ja.md) を参照してください。
+- **アイコン意匠デューデリジェンス**: アプリアイコンの由来・意匠レビュー履歴については [知的財産権 (IP) デューデリジェンス記録書](../legal/IP_COMPLIANCE.ja.md) および [アイコン意匠設計・IPレビュー履歴](../legal/ICON_DESIGN_HISTORY.ja.md) を参照してください。
 
 ---
 

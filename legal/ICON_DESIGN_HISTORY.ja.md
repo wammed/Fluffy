@@ -1,5 +1,9 @@
 # アイコンデザイン・IPレビュー履歴
 
+<p align="center">
+  <a href="ICON_DESIGN_HISTORY.md">English</a> | <a href="ICON_DESIGN_HISTORY.ja.md">日本語</a> | <a href="../docs/PORTAL.ja.md">📚 ドキュメントポータル</a> | <a href="../README.ja.md">🏠 ルート README</a>
+</p>
+
 > **公開リポジトリ記録**
 >
 > 本ドキュメントは、Fluffy、Waddle、Rooney、Toodle の4アプリケーションで使用する

@@ -1,4 +1,8 @@
-# THIRD_PARTY_LICENSES.md
+# Third-Party Licenses & Runtime Audit Record
+
+<p align="center">
+  <a href="THIRD_PARTY_LICENSES.md">English</a> | <a href="THIRD_PARTY_LICENSES.ja.md">日本語</a> | <a href="../docs/PORTAL.md">📚 Documentation Portal</a> | <a href="../README.md">🏠 Root README</a>
+</p>
 
 ## 1. Purpose
 

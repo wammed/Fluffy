@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="docs/PORTAL.ja.md">📚 ドキュメントポータル</a> | <a href="docs/BENCHMARK_REPORT.ja.md">📊 性能ベンチマーク報告書</a> | <a href="IP_COMPLIANCE.ja.md">🎨 アイコン設計 & IP監査</a>
+  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="docs/PORTAL.ja.md">📚 ドキュメントポータル</a> | <a href="docs/BENCHMARK_REPORT.ja.md">📊 性能ベンチマーク報告書</a> | <a href="legal/IP_COMPLIANCE.ja.md">🎨 アイコン設計 & IP監査</a>
 </p>
 
 </div>
@@ -240,6 +240,8 @@ fluffy status
 | **[技術仕様書 (Technical Design)](docs/TECHNICAL_DESIGN.ja.md)** | アーキテクチャ仕様、IPC プロトコル、エラー処理の詳細 |
 | **[セッション引継ぎ書 (Session Handover)](docs/SESSION_HANDOVER.ja.md)** | 実装フェーズの進捗履歴、検証状況、実機テストマトリクス |
 | **[性能ベンチマーク報告書 (Benchmark Report)](docs/BENCHMARK_REPORT.ja.md)** | 解像度別・マルチモニター環境での CPU/メモリ/GPU 実測データ |
+| **[知的財産権 (IP) デューデリジェンス記録書](legal/IP_COMPLIANCE.ja.md)** | アプリアイコンの由来、独自性検証、商標・知的財産権クリアランス記録 |
+| **[サードパーティライセンス監査記録](legal/THIRD_PARTY_LICENSES.ja.md)** | 依存関係ライセンス監査、外部ランタイムの法的境界、パッケージング方針 |
 
 ---
 
@@ -252,4 +254,15 @@ fluffy status
 
 ## 📄 ライセンス
 
-本ソフトウェアは [MIT License](LICENSE) のもとで公開されています。
+Fluffy は [MIT License](LICENSE) のもとで公開・提供されています。
+
+ライセンス全文については [LICENSE](LICENSE) をご覧ください。
+
+サードパーティ製依存クレートのライセンス、外部ランタイム（GStreamer / FFmpeg）のライセンス、およびアセットのプロヴェナンス（由来）については以下を参照してください：
+
+* [サードパーティライセンス監査記録](legal/THIRD_PARTY_LICENSES.ja.md)
+* [知的財産権 (IP) デューデリジェンス記録書](legal/IP_COMPLIANCE.ja.md)
+* [アプリアイコン意匠設計・IPレビュー履歴](legal/ICON_DESIGN_HISTORY.ja.md)
+
+Fluffy は GStreamer や FFmpeg を同梱・再配布しません。ユーザーおよびディストリビューションが各自のマルチメディアランタイムパッケージを提供します。
+

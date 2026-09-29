@@ -1,5 +1,9 @@
 # Icon Design & IP Review History
 
+<p align="center">
+  <a href="ICON_DESIGN_HISTORY.md">English</a> | <a href="ICON_DESIGN_HISTORY.ja.md">日本語</a> | <a href="../docs/PORTAL.md">📚 Documentation Portal</a> | <a href="../README.md">🏠 Root README</a>
+</p>
+
 > **Public Repository Record**
 >
 > This document records the development history, AI-assisted similarity reviews, design changes, and provenance

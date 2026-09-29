@@ -1,7 +1,7 @@
 # Icon Design & IP Compliance Due Diligence Record
 
 <p align="center">
-  <a href="IP_COMPLIANCE.md">English</a> | <a href="IP_COMPLIANCE.ja.md">日本語</a> | <a href="docs/PORTAL.md">📚 Documentation Portal</a> | <a href="README.md">🏠 Root README</a>
+  <a href="IP_COMPLIANCE.md">English</a> | <a href="IP_COMPLIANCE.ja.md">日本語</a> | <a href="../docs/PORTAL.md">📚 Documentation Portal</a> | <a href="../README.md">🏠 Root README</a>
 </p>
 
 This document records the provenance, design-review history, and IP due-diligence process for the **Fluffy** application icon.

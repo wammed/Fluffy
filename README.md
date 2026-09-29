@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="docs/PORTAL.md">📚 Documentation Portal</a> | <a href="docs/BENCHMARK_REPORT.md">📊 Performance Benchmarks</a> | <a href="IP_COMPLIANCE.md">🎨 Icon & IP Compliance</a>
+  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="docs/PORTAL.md">📚 Documentation Portal</a> | <a href="docs/BENCHMARK_REPORT.md">📊 Performance Benchmarks</a> | <a href="legal/IP_COMPLIANCE.md">🎨 Icon & IP Compliance</a>
 </p>
 
 </div>
@@ -240,6 +240,8 @@ For in-depth architectural and protocol details, see [docs/TECHNICAL_DESIGN.md](
 | **[Technical Design Document](docs/TECHNICAL_DESIGN.md)** | Comprehensive architectural specification and protocol reference |
 | **[Session Handover](docs/SESSION_HANDOVER.md)** | Engineering roadmap, phase progress, and hardware verification matrix |
 | **[Performance Benchmark Report](docs/BENCHMARK_REPORT.md)** | Hardware resource metrics across resolutions and monitor configurations |
+| **[IP Compliance](legal/IP_COMPLIANCE.md)** | Icon provenance and intellectual property due diligence record |
+| **[Third-Party Licenses](legal/THIRD_PARTY_LICENSES.md)** | Dependency licensing audit, runtime obligations, and packaging notes |
 
 ---
 
@@ -252,4 +254,16 @@ This project was built from ground-up using advanced **AI Vibe Coding** paired w
 
 ## 📄 License
 
-Licensed under the [MIT License](LICENSE).
+Fluffy is licensed under the [MIT License](LICENSE).
+
+See [LICENSE](LICENSE) for the full license text.
+
+For third-party dependency licenses, external runtime licensing information,
+and asset provenance, see:
+
+* [Third-Party Licenses](legal/THIRD_PARTY_LICENSES.md)
+* [IP Compliance](legal/IP_COMPLIANCE.md)
+* [Icon Design History](legal/ICON_DESIGN_HISTORY.md)
+
+Fluffy does not bundle or redistribute GStreamer or FFmpeg. Users and
+distributions provide their own multimedia runtime packages.

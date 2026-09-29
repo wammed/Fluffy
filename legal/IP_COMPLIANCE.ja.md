@@ -1,7 +1,7 @@
 # アイコン意匠設計 & 知的財産権 (IP) デューデリジェンス記録書
 
 <p align="center">
-  <a href="IP_COMPLIANCE.md">English</a> | <a href="IP_COMPLIANCE.ja.md">日本語</a> | <a href="docs/PORTAL.ja.md">📚 ドキュメントポータル</a> | <a href="README.ja.md">🏠 ルート README</a>
+  <a href="IP_COMPLIANCE.md">English</a> | <a href="IP_COMPLIANCE.ja.md">日本語</a> | <a href="../docs/PORTAL.ja.md">📚 ドキュメントポータル</a> | <a href="../README.ja.md">🏠 ルート README</a>
 </p>
 
 本書は、**Fluffy** アプリアイコンに関する設計の由来、意匠レビュー履歴、および知的財産権（商標・著作権）デューデリジェンスのプロセスを記録するものです。

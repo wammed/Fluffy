@@ -179,7 +179,7 @@ Per project documentation standards, items are tracked by five clear verificatio
     - **1080p30 Dual Output (DP-1 + DP-2)**: 18.0% CPU, 514.3 MB RSS, 10.5% GPU Decoder.
     - **1440p30 Dual Output (DP-1 + DP-2)**: 27.4% CPU, 615.5 MB RSS, 26.6% GPU Decoder.
     - **4K30 Dual Output (DP-1 + DP-2)**: 43.9% CPU, 854.1 MB RSS, 50.6% GPU Decoder.
-  - Full details archived in [`docs/BENCHMARK_REPORT.md`](file:///home/susie/GitHUB/wammed/Fluffy/docs/BENCHMARK_REPORT.md).
+  - Full details archived in [`docs/BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md).
 - [x] **Binary Size Optimization (Verified)**:
   - Resident daemon release binary: **3.2 MB** (zero GUI bloat, minimal footprint).
   - Settings GUI release binary: **30 MB**.
@@ -209,10 +209,10 @@ Following external technical reviews, the following architectural hardening item
 - **Best-Effort All-Output Semantics**: Multi-display video updates apply on a best-effort basis; partial failures (e.g. DP-1 succeeds, DP-2 fails) are reported per-output via `SetVideoResult` (`outputs: Vec<OutputApplyResult>`), avoiding fragile full-pipeline rollbacks.
 - **Fully Async Settings GUI IPC**: `fluffy-settings` runs all IPC queries and commands through asynchronous tasks (`iced::Task`), keeping the user interface completely fluid and non-blocking under all conditions.
 
-### 3.4 Brand Identity & Icon Redesign (IP Compliance Clearance)
+### 3.4 Brand Identity, Legal & Compliance Clearance
 - **Application Icon Redesign (`images/fluffy-icon.svg`)**: Revised icon to remove official COSMIC branding resemblance, establishing an independent design centered on a custom flowing "F" frame with minimal display and play functional glyphs in a matte finish.
 - **Full Asset Synchronization**: Synchronized `images/fluffy-icon.svg` with desktop assets (`data/icons/hicolor/scalable/apps/fluffy-icon.svg`, `com.github.fluffy.Fluffy.svg`, `com.github.wammed.fluffy.settings.svg`), compiled Settings GUI binary (`include_bytes!`), and local user icon cache.
-- **IP Due Diligence Record (`IP_COMPLIANCE.md` / `IP_COMPLIANCE.ja.md`)**: Documented provenance, third-party similarity review history, and independence from official third-party trademarks.
+- **IP & License Documentation (`legal/`)**: Consolidated all compliance and licensing records in `legal/`, including icon provenance (`legal/IP_COMPLIANCE.md` / `legal/IP_COMPLIANCE.ja.md`), dependency and runtime audits (`legal/THIRD_PARTY_LICENSES.md` / `legal/THIRD_PARTY_LICENSES.ja.md`), and design history (`legal/ICON_DESIGN_HISTORY.md` / `legal/ICON_DESIGN_HISTORY.ja.md`). Added `deny.toml` for `cargo-deny` license and security validation.
 
 ------------------------------------------------------------------------
 
@@ -249,15 +249,20 @@ Following external technical reviews, the following architectural hardening item
 Fluffy/
 ├── Cargo.toml                  (Features: default (daemon/cli), gui (libcosmic))
 ├── Cargo.lock
+├── deny.toml                   (cargo-deny dependency license & security configuration)
 ├── build.rs
 ├── README.md                   (English root documentation)
 ├── README.ja.md                (Japanese root documentation)
-├── IP_COMPLIANCE.md            (Icon provenance & IP due diligence record: English)
-├── IP_COMPLIANCE.ja.md         (Icon provenance & IP due diligence record: Japanese)
+├── legal/
+│   ├── IP_COMPLIANCE.md        (Icon provenance & IP due diligence record: English)
+│   ├── IP_COMPLIANCE.ja.md     (Icon provenance & IP due diligence record: Japanese)
+│   ├── THIRD_PARTY_LICENSES.md (Dependency audit & runtime license record: English)
+│   ├── THIRD_PARTY_LICENSES.ja.md (Dependency audit & runtime license record: Japanese)
+│   ├── ICON_DESIGN_HISTORY.md  (Multi-app icon design history: English)
+│   └── ICON_DESIGN_HISTORY.ja.md (Multi-app icon design history: Japanese)
 ├── images/
 │   ├── fluffy-icon.svg         (App icon master SVG)
-│   ├── fluffy-banner.png       (Project header banner PNG)
-│   └── fluffy-banner.svg       (Project header banner SVG)
+│   └── fluffy-banner.png       (Project header banner PNG)
 ├── data/
 │   ├── systemd/
 │   │   └── fluffy.service      (systemd --user service unit)

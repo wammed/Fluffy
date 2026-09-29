@@ -196,10 +196,10 @@ COSMIC Desktop / Wayland 向けの軽量ループ動画壁紙マネージャー�
 - **全画面適用のベストエフォート (Best-Effort) 仕様**: 全画面壁紙適用時に一部のモニターでエラーが発生しても、成功したモニターは新動画へ遷移し、失敗したモニターは旧動画を維持。各画面の個別結果を `SetVideoResult` (`outputs: Vec<OutputApplyResult>`) で返却。
 - **設定 GUI の完全非同期 IPC**: `fluffy-settings` の IPC 通信を `iced::Task` による完全非同期処理とし、デーモン高負荷時や変換中も GUI が絶対にフリーズしない応答性を実現。
 
-### 3.4 ブランド意匠・アプリアイコン刷新 & IP監査適合
+### 3.4 ブランド意匠・法務ライセンス & IP監査適合
 - **アプリアイコン意匠刷新 (`images/fluffy-icon.svg`)**: 公式 COSMIC ロゴ類似要素を排し、独自の流線型 "F" フレームおよびディスプレイ＋再生シンボルをマット質感で表現した新意匠へ刷新。
 - **全システムアセット同期**: `data/icons/hicolor/scalable/apps/` (`fluffy-icon.svg`, `com.github.fluffy.Fluffy.svg`, `com.github.wammed.fluffy.settings.svg`)、設定 GUI 内蔵バイナリ (`include_bytes!`)、およびユーザー環境キャッシュ (`~/.local/share/icons/hicolor/`) を完全同期。
-- **IPデューデリジェンス記録書 (`IP_COMPLIANCE.md` / `IP_COMPLIANCE.ja.md`)**: 第三者意匠との類似性レビューや公式 COSMIC ブランディング非依存化の経緯、デューデリジェンス結果を客観的に文書化。
+- **法務・ライセンス・知的財産 (IP) ドキュメント体系の確立 (`legal/`)**: アイコン意匠のプロヴェナンス記録（`legal/IP_COMPLIANCE.md` / `legal/IP_COMPLIANCE.ja.md`）、依存クレートおよび外部ランタイム（GStreamer / FFmpeg）のライセンス監査書（`legal/THIRD_PARTY_LICENSES.md` / `legal/THIRD_PARTY_LICENSES.ja.md`）、および 4 アプリ横断アイコン意匠履歴（`legal/ICON_DESIGN_HISTORY.md` / `legal/ICON_DESIGN_HISTORY.ja.md`）を `legal/` 配下に統合配備。また、`cargo-deny` 用設定ファイル `deny.toml` を導入。
 
 ------------------------------------------------------------------------
 
@@ -229,21 +229,26 @@ COSMIC Desktop / Wayland 向けの軽量ループ動画壁紙マネージャー�
 
 ------------------------------------------------------------------------
 
-## 4. リポジトリ構成
+## 5. リポジトリ構成
 
 ``` text
 Fluffy/
 ├── Cargo.toml                  (Features: default (daemon/cli), gui (libcosmic))
 ├── Cargo.lock
+├── deny.toml                   (cargo-deny 依存ライセンス & セキュリティ監査設定)
 ├── build.rs
 ├── README.md                   (英語ルートドキュメント)
 ├── README.ja.md                (日本語ルートドキュメント)
-├── IP_COMPLIANCE.md            (アイコン意匠設計・独自性検証・IPデューデリジェンス記録: 英語)
-├── IP_COMPLIANCE.ja.md         (アイコン意匠設計・独自性検証・IPデューデリジェンス記録: 日本語)
+├── legal/
+│   ├── IP_COMPLIANCE.md        (アイコン意匠設計・独自性検証・IPデューデリジェンス記録: 英語)
+│   ├── IP_COMPLIANCE.ja.md     (アイコン意匠設計・独自性検証・IPデューデリジェンス記録: 日本語)
+│   ├── THIRD_PARTY_LICENSES.md (依存関係監査 & ランタイムライセンス記録: 英語)
+│   ├── THIRD_PARTY_LICENSES.ja.md (依存関係監査 & ランタイムライセンス記録: 日本語)
+│   ├── ICON_DESIGN_HISTORY.md  (4アプリ横断アイコン意匠履歴: 英語)
+│   └── ICON_DESIGN_HISTORY.ja.md (4アプリ横断アイコン意匠履歴: 日本語)
 ├── images/
 │   ├── fluffy-icon.svg         (アプリアイコン マスター SVG)
-│   ├── fluffy-banner.png       (プロジェクトヘッダーバナー PNG)
-│   └── fluffy-banner.svg       (プロジェクトヘッダーバナー SVG)
+│   └── fluffy-banner.png       (プロジェクトヘッダーバナー PNG)
 ├── data/
 │   ├── systemd/
 │   │   └── fluffy.service      (systemd --user サービスユニット)

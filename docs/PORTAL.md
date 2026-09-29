@@ -19,7 +19,9 @@ Use this portal to navigate specifications, architecture design records, benchma
 | **[Technical Design Document](TECHNICAL_DESIGN.md)** | System architecture, IPC JSON-RPC protocol, cache rules, layer-shell integration | Developers, architects, and technical contributors |
 | **[Session Handover & Progress](SESSION_HANDOVER.md)** | Engineering roadmap, phase completion status, hardware verification matrix | Developers continuing project implementation |
 | **[Performance Benchmark Report](BENCHMARK_REPORT.md)** | Real-hardware CPU, RSS RAM, GPU 3D, and NVDEC decoder metrics across resolutions | Performance engineers and desktop integrators |
-| **[Icon Design & IP Compliance](../IP_COMPLIANCE.md)** | Icon provenance, design audit, and trademark / IP clearance verification | Package maintainers, desktop integrators, and contributors |
+| **[Icon Design & IP Compliance](../legal/IP_COMPLIANCE.md)** | Icon provenance, design audit, and trademark / IP clearance verification | Package maintainers, desktop integrators, and contributors |
+| **[Third-Party Licenses](../legal/THIRD_PARTY_LICENSES.md)** | Rust dependencies, GStreamer & FFmpeg runtime licensing, downstream packaging obligations | Downstream packagers, legal auditors, and distributors |
+| **[Icon Design & IP Review History](../legal/ICON_DESIGN_HISTORY.md)** | Multi-app icon genesis, AI prompt history, and iterative audit logs | Maintainers and archivists |
 
 ---
 
@@ -27,7 +29,7 @@ Use this portal to navigate specifications, architecture design records, benchma
 
 ### 1. Installation & Desktop Integration
 - **Quick Installation**: Follow the [Quick Start](../README.md#-quick-start) in the root README.
-- **Application Icon & Desktop Branding**: Scalable SVG icons are located in `images/fluffy-icon.svg` and `data/icons/hicolor/scalable/apps/`. Review [Icon Design & IP Compliance](../IP_COMPLIANCE.md) for provenance details.
+- **Application Icon & Desktop Branding**: Scalable SVG icons are located in `images/fluffy-icon.svg` and `data/icons/hicolor/scalable/apps/`. Review [Icon Design & IP Compliance](../legal/IP_COMPLIANCE.md) for provenance details.
 - **systemd `--user` Service**: Run `scripts/install-desktop-integration.sh` to install `fluffy.service`, desktop entry, and application icons.
 - **Managing via systemctl**: Learn service lifecycle management in [Root README: Desktop Setup](../README.md#%EF%B8%8F-desktop--systemd-user-service-setup).
 
@@ -45,6 +47,11 @@ Use this portal to navigate specifications, architecture design records, benchma
 ### 4. Reviewing Performance & Hardware Evidence
 - **Benchmark Evidence**: Consult [BENCHMARK_REPORT.md](BENCHMARK_REPORT.md) for actual metrics recorded on an NVIDIA RTX 3080 with dual 1440p displays under 1080p, 1440p, and 4K loads.
 - **Verification Levels**: Check [SESSION_HANDOVER.md: Section 2](SESSION_HANDOVER.md#2-current-state--verification-level) to see hardware test proof across Phases 1 through 7.
+
+### 5. Legal, Licensing & IP Provenance
+- **Project License**: Fluffy is licensed under the MIT License ([LICENSE](../LICENSE)).
+- **Third-Party & Runtime Licenses**: Fluffy does not bundle GStreamer or FFmpeg. Review [Third-Party Licenses](../legal/THIRD_PARTY_LICENSES.md) for detailed runtime boundaries and `cargo-deny` audit records.
+- **Icon Design Due Diligence**: See [Icon Design & IP Compliance](../legal/IP_COMPLIANCE.md) and [Icon Design History](../legal/ICON_DESIGN_HISTORY.md) for design provenance.
 
 ---
 
