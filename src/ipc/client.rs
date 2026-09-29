@@ -5,8 +5,8 @@ use std::{
     time::Duration,
 };
 
-use crate::error::{FluffyError, Result};
 use super::protocol::{CommandType, DaemonStatus, RequestEnvelope, ResponseEnvelope};
+use crate::error::{FluffyError, Result};
 
 pub struct IpcClient {
     socket_path: PathBuf,
@@ -47,7 +47,9 @@ impl IpcClient {
         reader.read_line(&mut response_line)?;
 
         if response_line.trim().is_empty() {
-            return Err(FluffyError::Ipc("Daemon closed connection without response".to_string()));
+            return Err(FluffyError::Ipc(
+                "Daemon closed connection without response".to_string(),
+            ));
         }
 
         let resp: ResponseEnvelope = serde_json::from_str(response_line.trim())?;
@@ -60,7 +62,8 @@ impl IpcClient {
 
         if !resp.success {
             return Err(FluffyError::Ipc(
-                resp.error.unwrap_or_else(|| "Unknown daemon error".to_string()),
+                resp.error
+                    .unwrap_or_else(|| "Unknown daemon error".to_string()),
             ));
         }
 
@@ -88,7 +91,8 @@ impl IpcClient {
         let resp = self.send(&req)?;
         if !resp.success {
             return Err(FluffyError::Ipc(
-                resp.error.unwrap_or_else(|| "Failed to set video".to_string()),
+                resp.error
+                    .unwrap_or_else(|| "Failed to set video".to_string()),
             ));
         }
         Ok(())
@@ -102,7 +106,8 @@ impl IpcClient {
         let resp = self.send(&req)?;
         if !resp.success {
             return Err(FluffyError::Ipc(
-                resp.error.unwrap_or_else(|| "Failed to pause playback".to_string()),
+                resp.error
+                    .unwrap_or_else(|| "Failed to pause playback".to_string()),
             ));
         }
         Ok(())
@@ -116,7 +121,8 @@ impl IpcClient {
         let resp = self.send(&req)?;
         if !resp.success {
             return Err(FluffyError::Ipc(
-                resp.error.unwrap_or_else(|| "Failed to resume playback".to_string()),
+                resp.error
+                    .unwrap_or_else(|| "Failed to resume playback".to_string()),
             ));
         }
         Ok(())
@@ -130,7 +136,8 @@ impl IpcClient {
         let resp = self.send(&req)?;
         if !resp.success {
             return Err(FluffyError::Ipc(
-                resp.error.unwrap_or_else(|| "Failed to stop playback".to_string()),
+                resp.error
+                    .unwrap_or_else(|| "Failed to stop playback".to_string()),
             ));
         }
         Ok(())
@@ -155,8 +162,8 @@ mod tests {
         io::{BufRead, BufReader, Write},
         os::unix::net::UnixListener,
         sync::{
-            atomic::{AtomicBool, AtomicU64, Ordering},
             Arc,
+            atomic::{AtomicBool, AtomicU64, Ordering},
         },
         thread,
     };
@@ -165,7 +172,8 @@ mod tests {
 
     fn temp_socket_path() -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let p = std::env::temp_dir().join(format!("fluffy_test_{}_{}.sock", std::process::id(), id));
+        let p =
+            std::env::temp_dir().join(format!("fluffy_test_{}_{}.sock", std::process::id(), id));
         let _ = std::fs::remove_file(&p);
         p
     }

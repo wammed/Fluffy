@@ -50,7 +50,9 @@ impl PipelineHandle {
         let overlay = sink
             .clone()
             .dynamic_cast::<gstreamer_video::VideoOverlay>()
-            .map_err(|_| FluffyError::Playback("waylandsink does not implement VideoOverlay".into()))?;
+            .map_err(|_| {
+                FluffyError::Playback("waylandsink does not implement VideoOverlay".into())
+            })?;
 
         // Pre-configure native window handle & render rectangle
         unsafe {
@@ -115,9 +117,7 @@ mod tests {
     fn test_pipeline_creation_nonexistent_file_fails() {
         let _ = gstreamer::init();
         let nonexistent = Path::new("/tmp/fluffy_nonexistent_pipeline_video.mp4");
-        let res = unsafe {
-            PipelineHandle::new(std::ptr::null_mut(), 0, 1920, 1080, nonexistent)
-        };
+        let res = unsafe { PipelineHandle::new(std::ptr::null_mut(), 0, 1920, 1080, nonexistent) };
         assert!(res.is_err());
     }
 }

@@ -1,11 +1,7 @@
-use std::{
-    fs,
-    path::Path,
-    process::Command,
-};
+use std::{fs, path::Path, process::Command};
 
-use crate::error::{FluffyError, Result};
 use super::probe::VideoStreamInfo;
+use crate::error::{FluffyError, Result};
 
 pub const DEFAULT_FPS: u32 = 30;
 pub const DEFAULT_CRF: u32 = 22;
@@ -40,21 +36,28 @@ pub fn transcode_video<P: AsRef<Path>, Q: AsRef<Path>>(
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args([
-        "-y",               // Overwrite output file
-        "-v", "error",      // Suppress normal banners
+        "-y", // Overwrite output file
+        "-v", "error", // Suppress normal banners
         "-i",
     ])
     .arg(input)
     .args([
-        "-an",              // Drop audio
-        "-sn",              // Drop subtitles
-        "-c:v", "libx264",  // H.264 video codec
-        "-pix_fmt", "yuv420p",
-        "-r", &DEFAULT_FPS.to_string(),
-        "-vf", &scale_filter,
-        "-crf", &DEFAULT_CRF.to_string(),
-        "-preset", DEFAULT_PRESET,
-        "-movflags", "+faststart",
+        "-an", // Drop audio
+        "-sn", // Drop subtitles
+        "-c:v",
+        "libx264", // H.264 video codec
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        &DEFAULT_FPS.to_string(),
+        "-vf",
+        &scale_filter,
+        "-crf",
+        &DEFAULT_CRF.to_string(),
+        "-preset",
+        DEFAULT_PRESET,
+        "-movflags",
+        "+faststart",
     ])
     .arg(output);
 

@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use crate::error::{FluffyError, Result};
 
@@ -176,7 +176,6 @@ pub struct DaemonStatus {
     pub active_jobs: Vec<ConversionJobInfo>,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,7 +195,10 @@ mod tests {
         assert_eq!(req.generation, Some(42));
         assert_eq!(req.command, CommandType::SetVideo);
         assert_eq!(req.output.as_deref(), Some("DP-1"));
-        assert_eq!(req.path.as_deref(), Some(std::path::Path::new("/home/user/video.mp4")));
+        assert_eq!(
+            req.path.as_deref(),
+            Some(std::path::Path::new("/home/user/video.mp4"))
+        );
 
         req.validate().expect("Validation failed");
     }
@@ -276,7 +278,13 @@ mod tests {
         let stale_req_gen = 9;
         let fresh_req_gen = 11;
 
-        assert!(stale_req_gen < current_gen, "Stale request must be strictly less than current generation");
-        assert!(fresh_req_gen >= current_gen, "Fresh request must be greater than or equal to current generation");
+        assert!(
+            stale_req_gen < current_gen,
+            "Stale request must be strictly less than current generation"
+        );
+        assert!(
+            fresh_req_gen >= current_gen,
+            "Fresh request must be greater than or equal to current generation"
+        );
     }
 }

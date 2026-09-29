@@ -7,8 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::protocol::{MAX_REQUEST_SIZE, RequestEnvelope, ResponseEnvelope};
 use crate::error::{FluffyError, Result};
-use super::protocol::{RequestEnvelope, ResponseEnvelope, MAX_REQUEST_SIZE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClientId(pub u64);
@@ -136,8 +136,11 @@ impl IpcServer {
                     match serde_json::from_str::<RequestEnvelope>(trimmed) {
                         Ok(req) => {
                             if let Err(err) = req.validate() {
-                                let resp = ResponseEnvelope::failure(req.request_id, err.to_string());
-                                if let Err(e) = Self::send_response_to_stream(reader.get_mut(), &resp) {
+                                let resp =
+                                    ResponseEnvelope::failure(req.request_id, err.to_string());
+                                if let Err(e) =
+                                    Self::send_response_to_stream(reader.get_mut(), &resp)
+                                {
                                     tracing::debug!(client_id = client_id.0, error = %e, "[IPC] Failed to send validation error to client");
                                 }
                                 disconnected.push(client_id);
@@ -150,7 +153,8 @@ impl IpcServer {
                         }
                         Err(e) => {
                             let resp = ResponseEnvelope::failure(0, format!("Malformed JSON: {e}"));
-                            if let Err(err) = Self::send_response_to_stream(reader.get_mut(), &resp) {
+                            if let Err(err) = Self::send_response_to_stream(reader.get_mut(), &resp)
+                            {
                                 tracing::debug!(client_id = client_id.0, error = %err, "[IPC] Failed to send JSON parse error to client");
                             }
                             disconnected.push(client_id);
@@ -207,9 +211,9 @@ impl Drop for IpcServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-    use crate::ipc::protocol::CommandType;
     use crate::ipc::client::IpcClient;
+    use crate::ipc::protocol::CommandType;
+    use std::time::Duration;
 
     #[test]
     fn test_ipc_server_client_roundtrip() {

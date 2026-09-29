@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use gstreamer::prelude::*;
 use gstreamer_video::prelude::*;
 
-use crate::error::Result;
 use super::pipeline::PipelineHandle;
 use super::state::PlaybackState;
+use crate::error::Result;
 
 pub trait VideoPlayer {
     fn play(&mut self, video: &Path) -> Result<()>;
@@ -97,8 +97,9 @@ impl VideoPlayer for GstVideoPlayer {
             new_handle.pipeline.set_state(gstreamer::State::Paused)?;
 
             // Wait for preroll to complete (first frame is committed to the compositor)
-            let (state_change_res, current_st, pending_st) =
-                new_handle.pipeline.state(gstreamer::ClockTime::from_seconds(3));
+            let (state_change_res, current_st, pending_st) = new_handle
+                .pipeline
+                .state(gstreamer::ClockTime::from_seconds(3));
             tracing::debug!(
                 operation = "preroll",
                 res = ?state_change_res,
@@ -191,7 +192,10 @@ impl VideoPlayer for GstVideoPlayer {
             return Ok(true);
         };
 
-        while let Some(msg) = handle.bus.timed_pop(gstreamer::ClockTime::from_mseconds(50)) {
+        while let Some(msg) = handle
+            .bus
+            .timed_pop(gstreamer::ClockTime::from_mseconds(50))
+        {
             use gstreamer::MessageView;
             match msg.view() {
                 MessageView::Eos(..) => {
@@ -236,10 +240,12 @@ impl VideoPlayer for GstVideoPlayer {
                     unsafe {
                         handle.overlay.set_window_handle(self.raw_surface_ptr);
                     }
-                    if let Err(e) = handle
-                        .overlay
-                        .set_render_rectangle(0, 0, self.width as i32, self.height as i32)
-                    {
+                    if let Err(e) = handle.overlay.set_render_rectangle(
+                        0,
+                        0,
+                        self.width as i32,
+                        self.height as i32,
+                    ) {
                         tracing::trace!(operation = "render_rectangle", error = ?e, "[Player] Overlay set_render_rectangle ignored");
                     }
                 }

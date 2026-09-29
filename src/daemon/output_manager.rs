@@ -1,8 +1,5 @@
-use std::{
-    collections::HashMap,
-    path::Path,
-};
 use smithay_client_toolkit::shell::wlr_layer::Layer;
+use std::{collections::HashMap, path::Path};
 use wayland_client::protocol::wl_output;
 
 use crate::{
@@ -33,7 +30,9 @@ impl GenerationTracker {
     }
 
     pub fn register_output(&mut self, name: &str) {
-        self.applied_generations.entry(name.to_string()).or_insert(0);
+        self.applied_generations
+            .entry(name.to_string())
+            .or_insert(0);
     }
 
     pub fn unregister_output(&mut self, name: &str) {
@@ -54,7 +53,11 @@ impl GenerationTracker {
     ) -> Result<u64> {
         if let Some(explicit) = explicit_generation {
             if let Some(target) = target_output {
-                if let Some(&curr) = self.applied_generations.get(target).filter(|&&c| explicit < c) {
+                if let Some(&curr) = self
+                    .applied_generations
+                    .get(target)
+                    .filter(|&&c| explicit < c)
+                {
                     return Err(FluffyError::Ipc(format!(
                         "Stale request generation: {explicit} < current {curr} for output '{target}'"
                     )));
@@ -89,12 +92,17 @@ impl GenerationTracker {
         job_generation: u64,
     ) -> Result<()> {
         if let Some(target) = target_output {
-            if let Some(&curr) = self.applied_generations.get(target).filter(|&&c| job_generation < c) {
+            if let Some(&curr) = self
+                .applied_generations
+                .get(target)
+                .filter(|&&c| job_generation < c)
+            {
                 return Err(FluffyError::Ipc(format!(
                     "Stale request generation: {job_generation} < current {curr} for output '{target}'"
                 )));
             }
-            self.applied_generations.insert(target.to_string(), job_generation);
+            self.applied_generations
+                .insert(target.to_string(), job_generation);
         } else {
             // Validate all outputs atomically before making any state mutations
             for (name, &curr) in &self.applied_generations {
@@ -150,7 +158,8 @@ impl OutputManager {
         target_output: Option<&str>,
         explicit_generation: Option<u64>,
     ) -> Result<u64> {
-        self.generation_tracker.allocate(target_output, explicit_generation)
+        self.generation_tracker
+            .allocate(target_output, explicit_generation)
     }
 
     /// Initializes a managed wallpaper surface and video player for a single Wayland output.
@@ -222,8 +231,14 @@ impl OutputManager {
         tracing::info!(
             "[OutputManager] Output '{}' geometry changed: {}x{} (scale {}, pos {:?}) -> {}x{} (scale {}, pos {:?})",
             name,
-            out.width, out.height, out.scale, out.logical_position,
-            new_geom.width, new_geom.height, new_geom.scale, new_geom.logical_position
+            out.width,
+            out.height,
+            out.scale,
+            out.logical_position,
+            new_geom.width,
+            new_geom.height,
+            new_geom.scale,
+            new_geom.logical_position
         );
 
         out.scale = new_geom.scale;
@@ -235,10 +250,12 @@ impl OutputManager {
             out.height = new_geom.height;
 
             // Update surface backing buffer
-            out.surface.update_geometry(ctx, new_geom.width, new_geom.height)?;
+            out.surface
+                .update_geometry(ctx, new_geom.width, new_geom.height)?;
 
             // Update video player overlay rendering rectangle
-            out.player.update_geometry(new_geom.width, new_geom.height)?;
+            out.player
+                .update_geometry(new_geom.width, new_geom.height)?;
         }
 
         Ok(true)
@@ -319,7 +336,8 @@ impl OutputManager {
         };
 
         // 1. Validate staleness and update generation tracking atomically
-        self.generation_tracker.validate_and_apply(target_output, target_gen)?;
+        self.generation_tracker
+            .validate_and_apply(target_output, target_gen)?;
 
         let mut apply_results = Vec::new();
 
@@ -333,7 +351,9 @@ impl OutputManager {
             out.generation = target_gen;
             tracing::info!(
                 "[OutputManager] Setting video for output '{}' (gen: {}): {:?}",
-                target, out.generation, video_path
+                target,
+                out.generation,
+                video_path
             );
             match out.player.play(video_path) {
                 Ok(()) => {
@@ -358,7 +378,9 @@ impl OutputManager {
                 out.generation = target_gen;
                 tracing::info!(
                     "[OutputManager] Setting video for output '{}' (gen: {}): {:?}",
-                    name, out.generation, video_path
+                    name,
+                    out.generation,
+                    video_path
                 );
                 match out.player.play(video_path) {
                     Ok(()) => {
@@ -471,7 +493,10 @@ impl OutputManager {
     pub fn poll_events(&mut self) -> Result<()> {
         for (name, out) in self.outputs.iter_mut() {
             if !out.player.poll_events()? {
-                tracing::error!("[OutputManager] Output '{}' playback encountered fatal error", name);
+                tracing::error!(
+                    "[OutputManager] Output '{}' playback encountered fatal error",
+                    name
+                );
             }
         }
         Ok(())
@@ -537,7 +562,12 @@ mod tests {
         // Job A finishes LATER -> must be rejected as stale!
         let stale_res = tracker.validate_and_apply(Some("DP-1"), gen_a);
         assert!(stale_res.is_err());
-        assert!(stale_res.unwrap_err().to_string().contains("Stale request generation: 1 < current 2"));
+        assert!(
+            stale_res
+                .unwrap_err()
+                .to_string()
+                .contains("Stale request generation: 1 < current 2")
+        );
 
         // Current output generation remains B (2)
         assert_eq!(tracker.current_generation("DP-1"), Some(2));
@@ -658,7 +688,12 @@ mod tests {
         // because DP-1 is already at generation 5 (4 < 5)
         let multi_res = tracker.validate_and_apply(None, 4);
         assert!(multi_res.is_err());
-        assert!(multi_res.unwrap_err().to_string().contains("Stale request generation"));
+        assert!(
+            multi_res
+                .unwrap_err()
+                .to_string()
+                .contains("Stale request generation")
+        );
 
         // Neither output state is corrupted
         assert_eq!(tracker.current_generation("DP-1"), Some(5));

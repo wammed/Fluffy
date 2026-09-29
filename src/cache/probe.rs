@@ -1,8 +1,5 @@
-use std::{
-    path::Path,
-    process::Command,
-};
 use serde::Deserialize;
+use std::{path::Path, process::Command};
 
 use crate::error::{FluffyError, Result};
 
@@ -48,7 +45,10 @@ pub fn probe_video<P: AsRef<Path>>(path: P) -> Result<VideoStreamInfo> {
     let path = path.as_ref();
     if !path.exists() {
         tracing::warn!(operation = "ffprobe", path = ?path, "[Probe] Video file does not exist");
-        return Err(FluffyError::Probe(format!("File does not exist: {:?}", path)));
+        return Err(FluffyError::Probe(format!(
+            "File does not exist: {:?}",
+            path
+        )));
     }
 
     tracing::debug!(operation = "ffprobe", path = ?path, "[Probe] Probing video file with ffprobe");
@@ -203,13 +203,15 @@ impl VideoStreamInfo {
         let codec_ok = self.codec == "h264" || self.codec == "avc1";
         let pix_fmt_ok = self.pix_fmt.as_deref() == Some("yuv420p");
         let dims_even = self.width.is_multiple_of(2) && self.height.is_multiple_of(2);
-        let dims_ok = self.width <= MAX_WIDTH && self.height <= MAX_HEIGHT && self.width > 0 && self.height > 0;
+        let dims_ok = self.width <= MAX_WIDTH
+            && self.height <= MAX_HEIGHT
+            && self.width > 0
+            && self.height > 0;
         let fps_ok = self.fps <= 30.5;
 
         container_ok && codec_ok && pix_fmt_ok && dims_even && dims_ok && fps_ok
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -309,7 +311,8 @@ mod tests {
 
     #[test]
     fn test_probe_corrupted_file_fails() {
-        let temp_dir = std::env::temp_dir().join(format!("fluffy_corrupted_test_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fluffy_corrupted_test_{}", std::process::id()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let corrupt_path = temp_dir.join("corrupted.mp4");
         std::fs::write(&corrupt_path, b"not a real video file content").unwrap();
@@ -318,7 +321,9 @@ mod tests {
         assert!(res.is_err());
         match res {
             Err(FluffyError::Probe(msg)) => {
-                assert!(msg.contains("ffprobe") || msg.contains("No streams") || msg.contains("json"));
+                assert!(
+                    msg.contains("ffprobe") || msg.contains("No streams") || msg.contains("json")
+                );
             }
             other => panic!("Expected FluffyError::Probe, got {other:?}"),
         }
@@ -326,4 +331,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
-

@@ -9,8 +9,8 @@ use std::{
     env,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -18,7 +18,7 @@ use crate::{
     cache::CacheManager,
     daemon::WallpaperDaemon,
     error::{FluffyError, Result},
-    ipc::{default_socket_path, IpcClient},
+    ipc::{IpcClient, default_socket_path},
 };
 
 fn print_help() {
@@ -57,7 +57,12 @@ OPTIONS for IPC client commands:
 fn parse_positional_path(args: &[String]) -> Option<String> {
     let mut i = 0;
     while i < args.len() {
-        if (args[i] == "--socket" || args[i] == "--output" || args[i] == "--generation" || args[i] == "--video") && i + 1 < args.len() {
+        if (args[i] == "--socket"
+            || args[i] == "--output"
+            || args[i] == "--generation"
+            || args[i] == "--video")
+            && i + 1 < args.len()
+        {
             i += 2;
             continue;
         }
@@ -83,7 +88,9 @@ fn main() -> Result<()> {
     let mut i = 0;
     while i < raw_args.len() {
         let arg = &raw_args[i];
-        if (arg == "--socket" || arg == "--output" || arg == "--video" || arg == "--generation") && i + 1 < raw_args.len() {
+        if (arg == "--socket" || arg == "--output" || arg == "--video" || arg == "--generation")
+            && i + 1 < raw_args.len()
+        {
             i += 2;
             continue;
         }
@@ -152,7 +159,7 @@ fn parse_generation_arg(args: &[String]) -> Option<u64> {
 }
 
 fn init_logging() {
-    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("fluffy=info,gstreamer=warn"));
@@ -199,17 +206,14 @@ fn cmd_daemon(args: &[String]) -> Result<()> {
         .ok();
     }
 
-    let mut daemon = WallpaperDaemon::new(
-        &socket_path,
-        requested_output.as_deref(),
-        exit_flag.clone(),
-    )?;
+    let mut daemon =
+        WallpaperDaemon::new(&socket_path, requested_output.as_deref(), exit_flag.clone())?;
 
     // If an initial video was specified, start playing it
     if let Some(video) = initial_video {
         tracing::info!("[Main] Starting initial playback: {:?}", video);
-        let req = crate::ipc::RequestEnvelope::new(0, crate::ipc::CommandType::SetVideo)
-            .with_path(video);
+        let req =
+            crate::ipc::RequestEnvelope::new(0, crate::ipc::CommandType::SetVideo).with_path(video);
         let resp = daemon.handle_request(&req);
         if !resp.success {
             tracing::error!("[Main] Initial video playback failed: {:?}", resp.error);
@@ -229,7 +233,10 @@ fn cmd_status(args: &[String]) -> Result<()> {
     println!("Connected Socket: {:?}", socket);
     if status.is_converting {
         if !status.active_jobs.is_empty() {
-            println!("Background Tasks: ⚙️  {} active conversion job(s):", status.active_jobs.len());
+            println!(
+                "Background Tasks: ⚙️  {} active conversion job(s):",
+                status.active_jobs.len()
+            );
             for job in &status.active_jobs {
                 println!(
                     "  - [Job #{}] (gen: {}, state: {}): {}",
@@ -237,7 +244,10 @@ fn cmd_status(args: &[String]) -> Result<()> {
                 );
             }
         } else {
-            println!("Background Task:  ⚙️  Optimizing / Transcoding video: {}", status.converting_file.as_deref().unwrap_or("active"));
+            println!(
+                "Background Task:  ⚙️  Optimizing / Transcoding video: {}",
+                status.converting_file.as_deref().unwrap_or("active")
+            );
         }
     } else {
         println!("Background Task:  Idle (No active conversion)");
@@ -245,7 +255,10 @@ fn cmd_status(args: &[String]) -> Result<()> {
     println!("Outputs ({} total):", status.outputs.len());
     for out in status.outputs {
         println!("  - [{}] State: {}", out.name, out.state);
-        println!("      Current Video: {}", out.current_video.unwrap_or_else(|| "None".to_string()));
+        println!(
+            "      Current Video: {}",
+            out.current_video.unwrap_or_else(|| "None".to_string())
+        );
         println!("      Generation:    {}", out.generation);
         println!("      Loop Count:    {}", out.loop_count);
     }
@@ -276,7 +289,9 @@ fn cmd_set_video(args: &[String]) -> Result<()> {
     }
 
     println!("[Fluffy] Requesting wallpaper change to: {:?}", abs_path);
-    println!("         (If normalization is required, transcoding runs asynchronously in background without interrupting current playback)");
+    println!(
+        "         (If normalization is required, transcoding runs asynchronously in background without interrupting current playback)"
+    );
     let client = IpcClient::new(&socket);
     client.set_video(&abs_path, output.as_deref(), generation)?;
 
@@ -329,10 +344,16 @@ fn cmd_import(args: &[String]) -> Result<()> {
         )));
     }
 
-    println!("[Import] Validating and importing to persistent storage: {:?}", abs_path);
+    println!(
+        "[Import] Validating and importing to persistent storage: {:?}",
+        abs_path
+    );
     let cache = CacheManager::new(CacheManager::default_storage_dir())?;
     let cached_path = cache.import_video(&abs_path)?;
-    println!("[Import] Successfully stored in persistent storage: {:?}", cached_path);
+    println!(
+        "[Import] Successfully stored in persistent storage: {:?}",
+        cached_path
+    );
 
     Ok(())
 }

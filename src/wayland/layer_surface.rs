@@ -1,20 +1,20 @@
 use smithay_client_toolkit::{
     shell::{
+        WaylandSurface,
         wlr_layer::{
             Anchor, KeyboardInteractivity, Layer, LayerShellHandler, LayerSurface,
             LayerSurfaceConfigure,
         },
-        WaylandSurface,
     },
     shm::slot::SlotPool,
 };
 use wayland_client::{
-    protocol::{wl_output, wl_shm},
     Connection, Proxy, QueueHandle,
+    protocol::{wl_output, wl_shm},
 };
 
-use crate::error::{FluffyError, Result};
 use super::connection::{WaylandContext, WaylandState};
+use crate::error::{FluffyError, Result};
 
 pub struct WallpaperSurface {
     pub layer_surface: Option<LayerSurface>,
@@ -26,7 +26,10 @@ pub struct WallpaperSurface {
 
 impl LayerShellHandler for WaylandState {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
-        tracing::warn!(operation = "layer_closed", "[Wayland] Layer surface closed by compositor");
+        tracing::warn!(
+            operation = "layer_closed",
+            "[Wayland] Layer surface closed by compositor"
+        );
     }
 
     fn configure(
@@ -38,7 +41,12 @@ impl LayerShellHandler for WaylandState {
         _serial: u32,
     ) {
         let (w, h) = configure.new_size;
-        tracing::debug!(operation = "layer_configure", width = w, height = h, "[Wayland] Compositor configured layer size");
+        tracing::debug!(
+            operation = "layer_configure",
+            width = w,
+            height = h,
+            "[Wayland] Compositor configured layer size"
+        );
     }
 }
 
@@ -175,7 +183,6 @@ impl WallpaperSurface {
 
         Ok(())
     }
-
 
     pub fn update_geometry(
         &mut self,

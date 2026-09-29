@@ -7,9 +7,9 @@ use smithay_client_toolkit::{
     shm::Shm,
 };
 use wayland_client::{
+    Connection, EventQueue, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_output, wl_surface},
-    Connection, EventQueue, QueueHandle,
 };
 
 use crate::error::{FluffyError, Result};
@@ -65,7 +65,8 @@ impl smithay_client_toolkit::output::OutputHandler for WaylandState {
         output: wl_output::WlOutput,
     ) {
         tracing::debug!("[Wayland] new_output event received");
-        self.output_events.push(WaylandOutputEvent::AddedOrUpdated(output));
+        self.output_events
+            .push(WaylandOutputEvent::AddedOrUpdated(output));
     }
 
     fn update_output(
@@ -75,7 +76,8 @@ impl smithay_client_toolkit::output::OutputHandler for WaylandState {
         output: wl_output::WlOutput,
     ) {
         tracing::debug!("[Wayland] update_output event received");
-        self.output_events.push(WaylandOutputEvent::AddedOrUpdated(output));
+        self.output_events
+            .push(WaylandOutputEvent::AddedOrUpdated(output));
     }
 
     fn output_destroyed(
@@ -85,7 +87,8 @@ impl smithay_client_toolkit::output::OutputHandler for WaylandState {
         output: wl_output::WlOutput,
     ) {
         tracing::info!("[Wayland] output_destroyed event received");
-        self.output_events.push(WaylandOutputEvent::Destroyed(output));
+        self.output_events
+            .push(WaylandOutputEvent::Destroyed(output));
     }
 }
 

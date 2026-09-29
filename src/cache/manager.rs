@@ -8,9 +8,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::{FluffyError, Result};
-use super::normalize::{normalize_even_dimensions, transcode_video, DEFAULT_FPS};
+use super::normalize::{DEFAULT_FPS, normalize_even_dimensions, transcode_video};
 use super::probe::probe_video;
+use crate::error::{FluffyError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlaybackProfileMetadata {
@@ -89,7 +89,11 @@ impl CacheManager {
         if let Ok(data_home) = std::env::var("XDG_DATA_HOME") {
             PathBuf::from(data_home).join("fluffy").join("storage")
         } else if let Ok(home) = std::env::var("HOME") {
-            PathBuf::from(home).join(".local").join("share").join("fluffy").join("storage")
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("fluffy")
+                .join("storage")
         } else {
             PathBuf::from("/tmp/fluffy-storage")
         }
@@ -148,9 +152,9 @@ impl CacheManager {
     /// 8. Returns the final path of the stored MP4.
     pub fn import_video<P: AsRef<Path>>(&self, source_path: P) -> Result<PathBuf> {
         let source_path = source_path.as_ref();
-        let canonical_source = source_path
-            .canonicalize()
-            .map_err(|e| FluffyError::Cache(format!("Cannot resolve path {:?}: {e}", source_path)))?;
+        let canonical_source = source_path.canonicalize().map_err(|e| {
+            FluffyError::Cache(format!("Cannot resolve path {:?}: {e}", source_path))
+        })?;
 
         // 1. Probe & Validate (will reject > 4K before transcoding)
         let probe_info = probe_video(&canonical_source)?;
@@ -282,7 +286,11 @@ impl CacheManager {
             profile: PlaybackProfileMetadata {
                 codec: "h264".to_string(),
                 pixel_format: "yuv420p".to_string(),
-                fps: if is_compatible { probe_info.fps.round() as u32 } else { DEFAULT_FPS },
+                fps: if is_compatible {
+                    probe_info.fps.round() as u32
+                } else {
+                    DEFAULT_FPS
+                },
                 audio: false,
                 width: target_w,
                 height: target_h,
@@ -316,7 +324,6 @@ impl CacheManager {
         Ok(final_video_path)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -361,7 +368,8 @@ mod tests {
 
     #[test]
     fn test_cache_import_atomic_and_reuse() {
-        let temp_dir = std::env::temp_dir().join(format!("fluffy_cache_test_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fluffy_cache_test_{}", std::process::id()));
         let manager = CacheManager::new(&temp_dir).expect("Failed to create cache manager");
 
         let source = Path::new("test.mp4");
@@ -395,7 +403,8 @@ mod tests {
 
     #[test]
     fn test_compatible_video_bypass_transcode() {
-        let temp_dir = std::env::temp_dir().join(format!("fluffy_bypass_test_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fluffy_bypass_test_{}", std::process::id()));
         let manager = CacheManager::new(&temp_dir).expect("Failed to create cache manager");
 
         let source = Path::new("test.mp4");
@@ -404,7 +413,9 @@ mod tests {
         }
 
         // test.mp4 is 1920x1080 30fps H.264 yuv420p -> compatible!
-        let stored = manager.import_video(source).expect("Import compatible video failed");
+        let stored = manager
+            .import_video(source)
+            .expect("Import compatible video failed");
         assert!(stored.exists());
 
         let hash = stored.file_stem().unwrap().to_str().unwrap();
@@ -421,7 +432,8 @@ mod tests {
 
     #[test]
     fn test_metadata_rename_failure_rolls_back_video() {
-        let temp_dir = std::env::temp_dir().join(format!("fluffy_meta_fail_test_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fluffy_meta_fail_test_{}", std::process::id()));
         let manager = CacheManager::new(&temp_dir).expect("Failed to create cache manager");
 
         let source = Path::new("test.mp4");
@@ -437,7 +449,10 @@ mod tests {
 
         // import_video must fail due to metadata rename error
         let res = manager.import_video(source);
-        assert!(res.is_err(), "Expected import_video to fail when metadata rename fails");
+        assert!(
+            res.is_err(),
+            "Expected import_video to fail when metadata rename fails"
+        );
 
         // Verify that the video file was cleaned up (rolled back) and not left in storage
         let final_video_path = manager.objects_dir().join(format!("{hash}.mp4"));
@@ -451,7 +466,8 @@ mod tests {
 
     #[test]
     fn test_cleanup_stale_temp_files() {
-        let temp_dir = std::env::temp_dir().join(format!("fluffy_clean_tmp_test_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fluffy_clean_tmp_test_{}", std::process::id()));
         let manager = CacheManager::new(&temp_dir).expect("Failed to create cache manager");
 
         let stale_vid = manager.videos_dir().join(".tmp.9999.12345.dummy.mp4");
@@ -478,7 +494,8 @@ mod tests {
 
     #[test]
     fn test_cache_already_exists_bypasses_work() {
-        let temp_dir = std::env::temp_dir().join(format!("fluffy_cache_hit_test_{}", std::process::id()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("fluffy_cache_hit_test_{}", std::process::id()));
         let manager = CacheManager::new(&temp_dir).expect("Failed to create cache manager");
 
         let source = Path::new("test.mp4");
@@ -509,4 +526,3 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }
-

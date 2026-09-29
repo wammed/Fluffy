@@ -42,7 +42,11 @@ impl ConversionJob {
 
     /// Returns the maximum generation among all attached subscribers.
     pub fn latest_generation(&self) -> u64 {
-        self.subscribers.iter().map(|s| s.generation).max().unwrap_or(0)
+        self.subscribers
+            .iter()
+            .map(|s| s.generation)
+            .max()
+            .unwrap_or(0)
     }
 
     /// Summarizes target outputs across all subscribers.
@@ -129,7 +133,12 @@ impl JobManager {
             if job.is_in_flight() && (hash_match || source_match) {
                 tracing::info!(
                     "[JobManager] In-Flight deduplication hit (hash: {:?}, source: {:?}): attaching request #{} (output: {:?}, gen: {}) to existing Job #{}",
-                    content_hash, source, subscriber.request_id, subscriber.target_output, subscriber.generation, job.id
+                    content_hash,
+                    source,
+                    subscriber.request_id,
+                    subscriber.target_output,
+                    subscriber.generation,
+                    job.id
                 );
                 if job.content_hash.is_none() && content_hash.is_some() {
                     job.content_hash = content_hash.map(|s| s.to_string());
@@ -197,7 +206,8 @@ impl JobManager {
 
     /// Returns a list of currently in-flight conversion job statuses, sorted deterministically by job_id.
     pub fn active_jobs(&self) -> Vec<ConversionJobInfo> {
-        let mut list: Vec<ConversionJobInfo> = self.jobs
+        let mut list: Vec<ConversionJobInfo> = self
+            .jobs
             .values()
             .filter(|j| j.is_in_flight())
             .map(|j| j.to_info())
@@ -236,8 +246,22 @@ mod tests {
     fn test_job_manager_three_jobs_concurrently() {
         let mut mgr = JobManager::new();
 
-        let (id1, new1) = mgr.register_job(Path::new("videoA.mp4"), None, 10, Some("DP-1".into()), 101, None);
-        let (id2, new2) = mgr.register_job(Path::new("videoB.mkv"), None, 11, Some("DP-1".into()), 102, None);
+        let (id1, new1) = mgr.register_job(
+            Path::new("videoA.mp4"),
+            None,
+            10,
+            Some("DP-1".into()),
+            101,
+            None,
+        );
+        let (id2, new2) = mgr.register_job(
+            Path::new("videoB.mkv"),
+            None,
+            11,
+            Some("DP-1".into()),
+            102,
+            None,
+        );
         let (id3, new3) = mgr.register_job(Path::new("videoC.webm"), None, 12, None, 103, None);
 
         assert!(new1 && new2 && new3);
@@ -266,7 +290,10 @@ mod tests {
         // Job 1 completes
         mgr.complete_job(id1);
 
-        assert!(mgr.is_converting(), "Daemon must still report is_converting=true while other jobs run");
+        assert!(
+            mgr.is_converting(),
+            "Daemon must still report is_converting=true while other jobs run"
+        );
         assert_eq!(mgr.active_job_count(), 2);
 
         let active = mgr.active_jobs();
@@ -369,14 +396,21 @@ mod tests {
             202,
             None,
         );
-        assert!(!is_new2, "Same content hash must be deduplicated across different paths");
+        assert!(
+            !is_new2,
+            "Same content hash must be deduplicated across different paths"
+        );
         assert_eq!(id1, id2);
 
         let job = mgr.get_job(id1).unwrap();
         assert_eq!(job.subscribers.len(), 2);
         assert_eq!(job.subscribers[0].generation, 10);
         assert_eq!(job.subscribers[1].generation, 12);
-        assert_eq!(job.latest_generation(), 12, "Latest generation must advance to newest request");
+        assert_eq!(
+            job.latest_generation(),
+            12,
+            "Latest generation must advance to newest request"
+        );
     }
 
     #[test]
@@ -404,7 +438,10 @@ mod tests {
             1002,
             Some(ClientId(11)),
         );
-        assert!(!is_new2, "Second request must deduplicate and NOT spawn a second worker");
+        assert!(
+            !is_new2,
+            "Second request must deduplicate and NOT spawn a second worker"
+        );
         assert_eq!(id1, id2, "Must share the exact same conversion job ID");
 
         let job = mgr.get_job(id1).unwrap();
@@ -436,27 +473,15 @@ mod tests {
         let hash = "fail_then_retry_hash";
 
         // 1. Initial attempt fails
-        let (id1, is_new1) = mgr.register_job(
-            Path::new("faulty.mp4"),
-            Some(hash),
-            1,
-            None,
-            10,
-            None,
-        );
+        let (id1, is_new1) =
+            mgr.register_job(Path::new("faulty.mp4"), Some(hash), 1, None, 10, None);
         assert!(is_new1);
         mgr.fail_job(id1, "Transcode crash".to_string());
         assert!(!mgr.is_converting());
 
         // 2. Retry attempt for same hash -> must spawn new job (is_new == true)
-        let (id2, is_new2) = mgr.register_job(
-            Path::new("faulty.mp4"),
-            Some(hash),
-            2,
-            None,
-            11,
-            None,
-        );
+        let (id2, is_new2) =
+            mgr.register_job(Path::new("faulty.mp4"), Some(hash), 2, None, 11, None);
         assert!(is_new2, "Retrying failed job must spawn a fresh worker");
         assert_ne!(id1, id2);
         assert_eq!(id2, 2);
@@ -498,7 +523,10 @@ mod tests {
         }
 
         // Exactly one thread must get is_new == true
-        assert_eq!(new_count, 1, "Only one worker should be spawned for concurrent identical requests");
+        assert_eq!(
+            new_count, 1,
+            "Only one worker should be spawned for concurrent identical requests"
+        );
         // All threads must point to the same job_id
         for id in &job_ids {
             assert_eq!(*id, job_ids[0]);
@@ -507,10 +535,18 @@ mod tests {
         let guard = mgr.lock().unwrap();
         let job = guard.get_job(job_ids[0]).unwrap();
         assert_eq!(job.subscribers.len(), 5);
-        assert_eq!(job.latest_generation(), 15, "Latest generation (10 + 5) must be preserved");
+        assert_eq!(
+            job.latest_generation(),
+            15,
+            "Latest generation (10 + 5) must be preserved"
+        );
 
         // Verify all 5 outputs are present
-        let outputs: Vec<Option<String>> = job.subscribers.iter().map(|s| s.target_output.clone()).collect();
+        let outputs: Vec<Option<String>> = job
+            .subscribers
+            .iter()
+            .map(|s| s.target_output.clone())
+            .collect();
         for i in 1..=5 {
             assert!(outputs.contains(&Some(format!("DP-{i}"))));
         }

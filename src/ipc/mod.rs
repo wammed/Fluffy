@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 pub use client::IpcClient;
 pub use protocol::{
-    CommandType, DaemonStatus, OutputApplyResult, OutputStatus, RequestEnvelope, ResponseEnvelope,
-    SetVideoResult, MAX_REQUEST_SIZE,
+    CommandType, DaemonStatus, MAX_REQUEST_SIZE, OutputApplyResult, OutputStatus, RequestEnvelope,
+    ResponseEnvelope, SetVideoResult,
 };
 pub use server::IpcServer;
 

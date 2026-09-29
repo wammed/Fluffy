@@ -1,13 +1,13 @@
 use std::path::{Path, PathBuf};
 
 use cosmic::app::{Core, Settings, Task};
-use cosmic::iced::widget::{column, container, row, scrollable, text, Space};
+use cosmic::iced::widget::{Space, column, container, row, scrollable, text};
 use cosmic::iced::{Alignment, Length, Size};
 use cosmic::widget::{button, text_input};
 use cosmic::{Application, Element};
 
+use fluffy::ipc::{DaemonStatus, IpcClient, OutputStatus, default_socket_path};
 use std::time::Duration;
-use fluffy::ipc::{default_socket_path, DaemonStatus, IpcClient, OutputStatus};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -41,7 +41,9 @@ const ARROW_FRAMES: &[&str] = &["↑", "↗", "→", "↘", "↓", "↙", "←",
 const FLUFFY_ICON_SVG: &[u8] = include_bytes!("../../images/fluffy-icon.svg");
 
 fn app_icon(size: u16) -> cosmic::widget::icon::Icon {
-    cosmic::widget::icon::from_svg_bytes(FLUFFY_ICON_SVG).icon().size(size)
+    cosmic::widget::icon::from_svg_bytes(FLUFFY_ICON_SVG)
+        .icon()
+        .size(size)
 }
 
 fn find_fluffy_executable() -> Result<PathBuf, String> {
@@ -131,9 +133,15 @@ fn classify_daemon_error(err: &str) -> &'static str {
     let lower = err.to_lowercase();
     if lower.contains("timed out") || lower.contains("timeout") {
         "timeout"
-    } else if lower.contains("no such file") || lower.contains("connection refused") || lower.contains("broken pipe") {
+    } else if lower.contains("no such file")
+        || lower.contains("connection refused")
+        || lower.contains("broken pipe")
+    {
         "daemon stopped"
-    } else if lower.contains("invalid response") || lower.contains("malformed") || lower.contains("failed to parse") {
+    } else if lower.contains("invalid response")
+        || lower.contains("malformed")
+        || lower.contains("failed to parse")
+    {
         "invalid response"
     } else {
         "connection unavailable"
@@ -230,10 +238,7 @@ impl Application for FluffySettingsApp {
         } else {
             std::time::Duration::from_secs(3)
         };
-        subs.push(
-            cosmic::iced::time::every(poll_interval)
-                .map(|_| Message::TickPoll),
-        );
+        subs.push(cosmic::iced::time::every(poll_interval).map(|_| Message::TickPoll));
 
         cosmic::iced::Subscription::batch(subs)
     }
@@ -256,7 +261,8 @@ impl Application for FluffySettingsApp {
             is_fetching_status: true,
         };
 
-        app.core.set_header_title("Fluffy Wallpaper Settings".to_string());
+        app.core
+            .set_header_title("Fluffy Wallpaper Settings".to_string());
         let task = async_fetch_status(socket_path);
         (app, task)
     }
@@ -301,10 +307,8 @@ impl Application for FluffySettingsApp {
                         self.outputs.clear();
                         self.is_converting = false;
                         let category = classify_daemon_error(&err);
-                        self.status_message = Some((
-                            format!("Daemon status error ({category}): {err}"),
-                            true,
-                        ));
+                        self.status_message =
+                            Some((format!("Daemon status error ({category}): {err}"), true));
                     }
                 }
                 Task::none()
@@ -330,12 +334,14 @@ impl Application for FluffySettingsApp {
                 self.starting_daemon = false;
                 match result {
                     Ok(_) => {
-                        self.status_message = Some(("Daemon successfully started and ready!".to_string(), false));
+                        self.status_message =
+                            Some(("Daemon successfully started and ready!".to_string(), false));
                         self.is_fetching_status = true;
                         async_fetch_status(self.socket_path.clone())
                     }
                     Err(err) => {
-                        self.status_message = Some((format!("Failed to start daemon: {err}"), true));
+                        self.status_message =
+                            Some((format!("Failed to start daemon: {err}"), true));
                         Task::none()
                     }
                 }
@@ -371,7 +377,8 @@ impl Application for FluffySettingsApp {
 
             Message::ApplyWallpaper => {
                 let Some(ref file) = self.chosen_file else {
-                    self.status_message = Some(("Please select a valid video file first".to_string(), true));
+                    self.status_message =
+                        Some(("Please select a valid video file first".to_string(), true));
                     return Task::none();
                 };
 
@@ -388,7 +395,8 @@ impl Application for FluffySettingsApp {
                 cosmic::app::Task::future(async move {
                     let res = tokio::task::spawn_blocking(move || {
                         let client = IpcClient::with_timeout(&socket, Duration::from_secs(60));
-                        client.set_video(&file_path, output.as_deref(), None)
+                        client
+                            .set_video(&file_path, output.as_deref(), None)
                             .map_err(|e| e.to_string())
                     })
                     .await
@@ -403,13 +411,15 @@ impl Application for FluffySettingsApp {
                 self.converting_file = None;
                 match result {
                     Ok(_) => {
-                        self.status_message = Some(("Wallpaper successfully applied!".to_string(), false));
+                        self.status_message =
+                            Some(("Wallpaper successfully applied!".to_string(), false));
                         self.is_fetching_status = true;
                         async_fetch_status(self.socket_path.clone())
                     }
                     Err(e) => {
                         let category = classify_daemon_error(&e);
-                        self.status_message = Some((format!("Failed to apply wallpaper ({category}): {e}"), true));
+                        self.status_message =
+                            Some((format!("Failed to apply wallpaper ({category}): {e}"), true));
                         Task::none()
                     }
                 }
@@ -420,29 +430,23 @@ impl Application for FluffySettingsApp {
                 Task::none()
             }
 
-            Message::Pause => {
-                async_playback_control(
-                    self.socket_path.clone(),
-                    PlaybackControlAction::Pause,
-                    self.selected_output.clone(),
-                )
-            }
+            Message::Pause => async_playback_control(
+                self.socket_path.clone(),
+                PlaybackControlAction::Pause,
+                self.selected_output.clone(),
+            ),
 
-            Message::Resume => {
-                async_playback_control(
-                    self.socket_path.clone(),
-                    PlaybackControlAction::Resume,
-                    self.selected_output.clone(),
-                )
-            }
+            Message::Resume => async_playback_control(
+                self.socket_path.clone(),
+                PlaybackControlAction::Resume,
+                self.selected_output.clone(),
+            ),
 
-            Message::Stop => {
-                async_playback_control(
-                    self.socket_path.clone(),
-                    PlaybackControlAction::Stop,
-                    self.selected_output.clone(),
-                )
-            }
+            Message::Stop => async_playback_control(
+                self.socket_path.clone(),
+                PlaybackControlAction::Stop,
+                self.selected_output.clone(),
+            ),
 
             Message::PlaybackControlCompleted(result) => {
                 match result {
@@ -451,7 +455,8 @@ impl Application for FluffySettingsApp {
                     }
                     Err(e) => {
                         let category = classify_daemon_error(&e);
-                        self.status_message = Some((format!("Playback command failed ({category}): {e}"), true));
+                        self.status_message =
+                            Some((format!("Playback command failed ({category}): {e}"), true));
                     }
                 }
                 self.is_fetching_status = true;
@@ -488,7 +493,8 @@ impl Application for FluffySettingsApp {
             header_actions = header_actions.push(start_btn);
         }
 
-        header_actions = header_actions.push(button::standard("Refresh").on_press(Message::RefreshStatus));
+        header_actions =
+            header_actions.push(button::standard("Refresh").on_press(Message::RefreshStatus));
 
         let header = row![
             app_icon(36),
@@ -512,11 +518,7 @@ impl Application for FluffySettingsApp {
             .align_y(Alignment::Center)
             .spacing(10);
 
-            content = content.push(
-                container(banner)
-                    .padding(10)
-                    .width(Length::Fill)
-            );
+            content = content.push(container(banner).padding(10).width(Length::Fill));
         }
 
         // Section: Output Selector
@@ -570,11 +572,7 @@ impl Application for FluffySettingsApp {
                 ]
                 .spacing(16);
 
-                cards = cards.push(
-                    container(card_row)
-                        .padding(8)
-                        .width(Length::Fill)
-                );
+                cards = cards.push(container(card_row).padding(8).width(Length::Fill));
             }
             content = content.push(cards);
         }
@@ -611,11 +609,7 @@ impl Application for FluffySettingsApp {
             ]
             .spacing(4);
 
-            content = content.push(
-                container(converting_banner)
-                    .padding(12)
-                    .width(Length::Fill)
-            );
+            content = content.push(container(converting_banner).padding(12).width(Length::Fill));
         }
 
         // Apply Button
@@ -651,15 +645,10 @@ impl Application for FluffySettingsApp {
         ]
         .spacing(3);
 
-        content = content.push(
-            container(guide)
-                .padding(12)
-                .width(Length::Fill)
-        );
+        content = content.push(container(guide).padding(12).width(Length::Fill));
 
         scrollable(content).into()
     }
-
 }
 
 fn main() -> cosmic::iced::Result {
