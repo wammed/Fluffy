@@ -17,7 +17,6 @@ check:
 name: Rust checks
 runs-on: ubuntu-latest
 
-```
 steps:
   - name: Checkout
     uses: actions/checkout@v4
@@ -55,13 +54,11 @@ steps:
 
   - name: Check diff
     run: git diff --check
-```
 
 deny:
 name: Dependency audit
 runs-on: ubuntu-latest
 
-```
 steps:
   - name: Checkout
     uses: actions/checkout@v4
@@ -76,4 +73,3 @@ steps:
 
   - name: Run cargo-deny
     run: cargo deny check
-```
