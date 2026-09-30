@@ -173,8 +173,7 @@ fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("fluffy=info,gstreamer=warn"));
 
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .with_timer(crate::benchmark::Iso8601LocalTime);
+    let fmt_layer = tracing_subscriber::fmt::layer().with_timer(crate::benchmark::Iso8601LocalTime);
 
     let _ = tracing_subscriber::registry()
         .with(filter)

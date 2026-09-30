@@ -135,7 +135,9 @@ mod tests {
 
     #[test]
     fn test_safe_video_id_cache_hash() {
-        let cached = Path::new("/var/cache/fluffy/videos/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.mp4");
+        let cached = Path::new(
+            "/var/cache/fluffy/videos/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.mp4",
+        );
         let vid = safe_video_id(cached);
         assert_eq!(vid, "0123456789ab");
     }
@@ -184,5 +186,3 @@ mod tests {
         assert_eq!(tracker.current_generation("DP-1"), Some(11));
     }
 }
-
-

@@ -406,7 +406,10 @@ impl OutputManager {
                 session_id = %sid,
                 "[OutputManager] Video switch requested"
             );
-            match out.player.play_with_generation(video_path, target_gen, old_gen) {
+            match out
+                .player
+                .play_with_generation(video_path, target_gen, old_gen)
+            {
                 Ok(()) => {
                     apply_results.push(OutputApplyResult {
                         name: target.to_string(),
@@ -436,7 +439,10 @@ impl OutputManager {
                     session_id = %sid,
                     "[OutputManager] Video switch requested"
                 );
-                match out.player.play_with_generation(video_path, target_gen, old_gen) {
+                match out
+                    .player
+                    .play_with_generation(video_path, target_gen, old_gen)
+                {
                     Ok(()) => {
                         any_success = true;
                         apply_results.push(OutputApplyResult {

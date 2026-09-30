@@ -159,7 +159,8 @@ impl IpcClient {
         let resp = self.send(&req)?;
         if !resp.success {
             return Err(FluffyError::Ipc(
-                resp.error.unwrap_or_else(|| "Failed to record mark".to_string()),
+                resp.error
+                    .unwrap_or_else(|| "Failed to record mark".to_string()),
             ));
         }
         Ok(())

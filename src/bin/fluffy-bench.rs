@@ -26,7 +26,11 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
     let raw_args = &args[1..];
 
-    if raw_args.is_empty() || raw_args[0] == "help" || raw_args[0] == "--help" || raw_args[0] == "-h" {
+    if raw_args.is_empty()
+        || raw_args[0] == "help"
+        || raw_args[0] == "--help"
+        || raw_args[0] == "-h"
+    {
         print_help();
         return Ok(());
     }
@@ -54,7 +58,9 @@ fn main() -> Result<()> {
     }
 
     let label = label.ok_or_else(|| {
-        FluffyError::Ipc("Missing label for benchmark marker. Usage: fluffy-bench mark <LABEL>".to_string())
+        FluffyError::Ipc(
+            "Missing label for benchmark marker. Usage: fluffy-bench mark <LABEL>".to_string(),
+        )
     })?;
 
     let client = IpcClient::new(&socket);
