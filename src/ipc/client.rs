@@ -153,6 +153,17 @@ impl IpcClient {
         }
         Ok(())
     }
+
+    pub fn mark(&self, label: &str) -> Result<()> {
+        let req = RequestEnvelope::new(1, CommandType::Mark).with_label(label);
+        let resp = self.send(&req)?;
+        if !resp.success {
+            return Err(FluffyError::Ipc(
+                resp.error.unwrap_or_else(|| "Failed to record mark".to_string()),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -348,6 +359,34 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
+
+        let _ = srv.join();
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn test_ipc_mark_request() {
+        let p = temp_socket_path();
+        let listener = UnixListener::bind(&p).unwrap();
+
+        let srv = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&mut stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let req: RequestEnvelope = serde_json::from_str(line.trim()).unwrap();
+            assert_eq!(req.command, CommandType::Mark);
+            assert_eq!(req.label.as_deref(), Some("browser-start"));
+
+            let resp = ResponseEnvelope::success(req.request_id, None);
+            let mut resp_data = serde_json::to_vec(&resp).unwrap();
+            resp_data.push(b'\n');
+            stream.write_all(&resp_data).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let client = IpcClient::with_timeout(&p, Duration::from_millis(1000));
+        assert!(client.mark("browser-start").is_ok());
 
         let _ = srv.join();
         let _ = std::fs::remove_file(&p);

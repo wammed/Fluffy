@@ -1,3 +1,4 @@
+pub mod benchmark;
 pub mod cache;
 pub mod daemon;
 pub mod error;

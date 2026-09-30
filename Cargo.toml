@@ -15,6 +15,10 @@ name = "fluffy-settings"
 path = "src/bin/fluffy-settings.rs"
 required-features = ["gui"]
 
+[[bin]]
+name = "fluffy-bench"
+path = "src/bin/fluffy-bench.rs"
+
 [features]
 default = []
 gui = ["dep:libcosmic", "dep:tokio", "dep:rfd"]

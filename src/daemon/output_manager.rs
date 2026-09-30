@@ -91,12 +91,21 @@ impl GenerationTracker {
         target_output: Option<&str>,
         job_generation: u64,
     ) -> Result<()> {
+        let sid = crate::benchmark::session_id();
         if let Some(target) = target_output {
             if let Some(&curr) = self
                 .applied_generations
                 .get(target)
                 .filter(|&&c| job_generation < c)
             {
+                tracing::warn!(
+                    event = "stale_request_rejected",
+                    output = %target,
+                    generation = job_generation,
+                    current_generation = curr,
+                    session_id = %sid,
+                    "[GenerationTracker] Stale request rejected: job_gen < current_gen"
+                );
                 return Err(FluffyError::Ipc(format!(
                     "Stale request generation: {job_generation} < current {curr} for output '{target}'"
                 )));
@@ -107,6 +116,14 @@ impl GenerationTracker {
             // Validate all outputs atomically before making any state mutations
             for (name, &curr) in &self.applied_generations {
                 if job_generation < curr {
+                    tracing::warn!(
+                        event = "stale_request_rejected",
+                        output = %name,
+                        generation = job_generation,
+                        current_generation = curr,
+                        session_id = %sid,
+                        "[GenerationTracker] Stale request rejected on output: job_gen < current_gen"
+                    );
                     return Err(FluffyError::Ipc(format!(
                         "Stale request generation: {job_generation} < current {curr} on output '{name}'"
                     )));
@@ -174,7 +191,8 @@ impl OutputManager {
         let width = surface.width;
         let height = surface.height;
 
-        let player = GstVideoPlayer::new(
+        let player = GstVideoPlayer::new_with_name(
+            &name,
             ctx.raw_display_ptr(),
             surface.raw_surface_ptr,
             width,
@@ -187,6 +205,17 @@ impl OutputManager {
         let description = geom.and_then(|g| g.description);
 
         self.generation_tracker.register_output(&name);
+
+        let sid = crate::benchmark::session_id();
+        tracing::info!(
+            event = "output_added",
+            output = %name,
+            width,
+            height,
+            scale,
+            session_id = %sid,
+            "[OutputManager] Output added and initialized"
+        );
 
         self.outputs.insert(
             name.clone(),
@@ -258,6 +287,17 @@ impl OutputManager {
                 .update_geometry(new_geom.width, new_geom.height)?;
         }
 
+        let sid = crate::benchmark::session_id();
+        tracing::info!(
+            event = "output_configured",
+            output = %name,
+            width = new_geom.width,
+            height = new_geom.height,
+            scale = new_geom.scale,
+            session_id = %sid,
+            "[OutputManager] Output geometry configured"
+        );
+
         Ok(true)
     }
 
@@ -275,7 +315,13 @@ impl OutputManager {
         if let Some(name) = name_to_remove
             && let Some(mut out) = self.outputs.remove(&name)
         {
-            tracing::info!(output = %name, "[OutputManager] Output disconnected. Tearing down playback & surface...");
+            let sid = crate::benchmark::session_id();
+            tracing::info!(
+                event = "output_removed",
+                output = %name,
+                session_id = %sid,
+                "[OutputManager] Output removed and cleaned up"
+            );
             self.generation_tracker.unregister_output(&name);
             if let Err(e) = out.player.stop() {
                 tracing::warn!(output = %name, error = %e, "[OutputManager] Error stopping player during output removal");
@@ -339,6 +385,8 @@ impl OutputManager {
         self.generation_tracker
             .validate_and_apply(target_output, target_gen)?;
 
+        let video_id = crate::benchmark::safe_video_id(video_path);
+        let sid = crate::benchmark::session_id();
         let mut apply_results = Vec::new();
 
         // 2. Apply wallpaper transition to hardware surface(s) with best-effort semantics
@@ -348,14 +396,17 @@ impl OutputManager {
                 .get_mut(target)
                 .ok_or_else(|| FluffyError::OutputNotFound(target.to_string()))?;
 
+            let old_gen = out.generation;
             out.generation = target_gen;
             tracing::info!(
-                "[OutputManager] Setting video for output '{}' (gen: {}): {:?}",
-                target,
-                out.generation,
-                video_path
+                event = "video_switch_requested",
+                output = %target,
+                generation = target_gen,
+                video_id = %video_id,
+                session_id = %sid,
+                "[OutputManager] Video switch requested"
             );
-            match out.player.play(video_path) {
+            match out.player.play_with_generation(video_path, target_gen, old_gen) {
                 Ok(()) => {
                     apply_results.push(OutputApplyResult {
                         name: target.to_string(),
@@ -375,14 +426,17 @@ impl OutputManager {
         } else {
             let mut any_success = false;
             for (name, out) in self.outputs.iter_mut() {
+                let old_gen = out.generation;
                 out.generation = target_gen;
                 tracing::info!(
-                    "[OutputManager] Setting video for output '{}' (gen: {}): {:?}",
-                    name,
-                    out.generation,
-                    video_path
+                    event = "video_switch_requested",
+                    output = %name,
+                    generation = target_gen,
+                    video_id = %video_id,
+                    session_id = %sid,
+                    "[OutputManager] Video switch requested"
                 );
-                match out.player.play(video_path) {
+                match out.player.play_with_generation(video_path, target_gen, old_gen) {
                     Ok(()) => {
                         any_success = true;
                         apply_results.push(OutputApplyResult {

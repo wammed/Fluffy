@@ -1,3 +1,4 @@
+pub mod benchmark;
 pub mod cache;
 pub mod daemon;
 pub mod error;
@@ -37,6 +38,7 @@ COMMANDS:
     resume               Resume video playback
     stop                 Stop video playback
     reload               Reload current wallpaper video
+    mark <LABEL>         Record a benchmark workload marker event via IPC
     help, --help         Print this help message
 
 OPTIONS for 'daemon' / 'run':
@@ -70,7 +72,12 @@ fn parse_positional_path(args: &[String]) -> Option<String> {
             i += 1;
             continue;
         }
-        if args[i] == "set-video" || args[i] == "set_video" || args[i] == "import" {
+        if args[i] == "set-video"
+            || args[i] == "set_video"
+            || args[i] == "import"
+            || args[i] == "mark"
+            || args[i] == "bench"
+        {
             i += 1;
             continue;
         }
@@ -118,6 +125,8 @@ fn main() -> Result<()> {
         "resume" => cmd_resume(raw_args),
         "stop" => cmd_stop(raw_args),
         "reload" => cmd_reload(raw_args),
+        "mark" => cmd_mark(raw_args),
+        "bench" => cmd_bench(raw_args),
         "daemon" | "run" => cmd_daemon(raw_args),
         cmd => {
             // Check if it's a file path meant for daemon initial video, or invalid command
@@ -164,9 +173,12 @@ fn init_logging() {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("fluffy=info,gstreamer=warn"));
 
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_timer(crate::benchmark::Iso8601LocalTime);
+
     let _ = tracing_subscriber::registry()
         .with(filter)
-        .with(tracing_subscriber::fmt::layer())
+        .with(fmt_layer)
         .try_init();
 }
 
@@ -364,4 +376,36 @@ fn cmd_reload(args: &[String]) -> Result<()> {
     client.reload()?;
     println!("Reloaded wallpaper.");
     Ok(())
+}
+
+fn cmd_mark(args: &[String]) -> Result<()> {
+    let socket = parse_socket_arg(args);
+    let label = parse_positional_path(args)
+        .ok_or_else(|| FluffyError::Ipc("Missing label for 'mark'".to_string()))?;
+
+    let client = IpcClient::new(&socket);
+    client.mark(&label)?;
+    println!("[Benchmark] Mark recorded: {}", label);
+    Ok(())
+}
+
+fn cmd_bench(args: &[String]) -> Result<()> {
+    // Supports 'fluffy bench mark <LABEL>'
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "mark" {
+            let label = args.get(i + 1).cloned().ok_or_else(|| {
+                FluffyError::Ipc("Missing label for 'bench mark <LABEL>'".to_string())
+            })?;
+            let socket = parse_socket_arg(args);
+            let client = IpcClient::new(&socket);
+            client.mark(&label)?;
+            println!("[Benchmark] Mark recorded: {}", label);
+            return Ok(());
+        }
+        i += 1;
+    }
+
+    eprintln!("Unknown benchmark command. Usage: fluffy bench mark <LABEL>");
+    std::process::exit(1);
 }

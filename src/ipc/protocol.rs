@@ -15,6 +15,7 @@ pub enum CommandType {
     Resume,
     Stop,
     Reload,
+    Mark,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +28,8 @@ pub struct RequestEnvelope {
     pub output: Option<String>,
     #[serde(default)]
     pub path: Option<PathBuf>,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 impl RequestEnvelope {
@@ -37,6 +40,7 @@ impl RequestEnvelope {
             command,
             output: None,
             path: None,
+            label: None,
         }
     }
 
@@ -55,10 +59,20 @@ impl RequestEnvelope {
         self
     }
 
+    pub fn with_label<S: Into<String>>(mut self, label: S) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.command == CommandType::SetVideo && self.path.is_none() {
             return Err(FluffyError::Ipc(
                 "'set_video' command requires a valid 'path' field".to_string(),
+            ));
+        }
+        if self.command == CommandType::Mark && self.label.is_none() {
+            return Err(FluffyError::Ipc(
+                "'mark' command requires a valid 'label' field".to_string(),
             ));
         }
         Ok(())
@@ -223,6 +237,7 @@ mod tests {
             command: CommandType::SetVideo,
             output: None,
             path: None,
+            label: None,
         };
 
         assert!(req.validate().is_err());
@@ -286,5 +301,25 @@ mod tests {
             fresh_req_gen >= current_gen,
             "Fresh request must be greater than or equal to current generation"
         );
+    }
+
+    #[test]
+    fn test_mark_command_serialization() {
+        let req = RequestEnvelope::new(42, CommandType::Mark).with_label("browser-start");
+        assert!(req.validate().is_ok());
+
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"command\":\"mark\""));
+        assert!(json.contains("\"label\":\"browser-start\""));
+
+        let deserialized: RequestEnvelope = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.command, CommandType::Mark);
+        assert_eq!(deserialized.label.as_deref(), Some("browser-start"));
+    }
+
+    #[test]
+    fn test_mark_missing_label_validation() {
+        let req = RequestEnvelope::new(42, CommandType::Mark);
+        assert!(req.validate().is_err());
     }
 }

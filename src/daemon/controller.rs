@@ -50,7 +50,12 @@ impl WallpaperDaemon {
         requested_output: Option<&str>,
         exit_flag: Arc<AtomicBool>,
     ) -> Result<Self> {
+        let sid = crate::benchmark::session_id();
+        let pid = std::process::id();
         tracing::info!(
+            event = "daemon_started",
+            session_id = %sid,
+            pid = pid,
             version = env!("CARGO_PKG_VERSION"),
             socket = ?socket_path.as_ref(),
             requested_output = ?requested_output,
@@ -306,6 +311,29 @@ impl WallpaperDaemon {
                 }
                 ResponseEnvelope::success(req.request_id, None)
             }
+
+            CommandType::Mark => {
+                let Some(ref label) = req.label else {
+                    return ResponseEnvelope::failure(
+                        req.request_id,
+                        "'mark' command requires 'label'",
+                    );
+                };
+                let sid = crate::benchmark::session_id();
+                tracing::info!(
+                    event = "benchmark_mark",
+                    label = %label,
+                    session_id = %sid,
+                    "[Benchmark] Benchmark mark recorded"
+                );
+                ResponseEnvelope::success(
+                    req.request_id,
+                    Some(serde_json::json!({
+                        "label": label,
+                        "session_id": sid,
+                    })),
+                )
+            }
         }
     }
 
@@ -367,7 +395,6 @@ impl WallpaperDaemon {
                     return;
                 }
 
-                // Reserve monotonic generation AT REQUEST ARRIVAL TIME
                 let generation = match self
                     .outputs
                     .allocate_generation(req.output.as_deref(), req.generation)
@@ -379,6 +406,18 @@ impl WallpaperDaemon {
                         return;
                     }
                 };
+
+                let sid = crate::benchmark::session_id();
+                let video_id = crate::benchmark::safe_video_id(path);
+                tracing::info!(
+                    event = "ipc_set_video_received",
+                    request_id = req.request_id,
+                    output = ?req.output,
+                    generation,
+                    video_id = %video_id,
+                    session_id = %sid,
+                    "[Daemon] IPC set-video request received"
+                );
 
                 // Fast check: if the path is ALREADY inside the persistent cache videos directory,
                 // apply it immediately without spawning a worker thread.
@@ -521,12 +560,15 @@ impl WallpaperDaemon {
                             Err(FluffyError::Ipc(ref err_msg))
                                 if err_msg.starts_with("Stale request generation") =>
                             {
+                                let sid = crate::benchmark::session_id();
                                 tracing::warn!(
+                                    event = "stale_request_rejected",
                                     operation = "job_subscriber_stale",
                                     job_id = job.id,
                                     request_id = sub.request_id,
                                     generation = sub.generation,
-                                    target = ?sub.target_output,
+                                    output = ?sub.target_output,
+                                    session_id = %sid,
                                     reason = %err_msg,
                                     "[Daemon] Subscriber request was superseded by a newer generation"
                                 );
@@ -614,7 +656,14 @@ impl WallpaperDaemon {
             thread::sleep(Duration::from_millis(5));
         }
 
-        tracing::info!("[Daemon] Shutdown signal detected. Performing clean teardown...");
+        let sid = crate::benchmark::session_id();
+        let pid = std::process::id();
+        tracing::info!(
+            event = "daemon_shutdown",
+            session_id = %sid,
+            pid = pid,
+            "[Daemon] Shutdown signal detected. Performing clean teardown..."
+        );
         self.teardown();
         tracing::info!("[Daemon] Daemon teardown completed. Clean shutdown.");
         Ok(())

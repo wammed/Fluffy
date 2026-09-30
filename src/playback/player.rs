@@ -18,6 +18,7 @@ pub trait VideoPlayer {
 }
 
 pub struct GstVideoPlayer {
+    output_name: String,
     raw_display_ptr: *mut std::ffi::c_void,
     raw_surface_ptr: usize,
     width: u32,
@@ -25,6 +26,7 @@ pub struct GstVideoPlayer {
     pipeline_handle: Option<PipelineHandle>,
     current_video: Option<PathBuf>,
     state: PlaybackState,
+    generation: u64,
     loop_count: u64,
 }
 
@@ -35,9 +37,20 @@ impl GstVideoPlayer {
         width: u32,
         height: u32,
     ) -> Result<Self> {
+        Self::new_with_name("default", raw_display_ptr, raw_surface_ptr, width, height)
+    }
+
+    pub fn new_with_name(
+        output_name: impl Into<String>,
+        raw_display_ptr: *mut std::ffi::c_void,
+        raw_surface_ptr: usize,
+        width: u32,
+        height: u32,
+    ) -> Result<Self> {
         gstreamer::init()?;
 
         Ok(Self {
+            output_name: output_name.into(),
             raw_display_ptr,
             raw_surface_ptr,
             width,
@@ -45,12 +58,21 @@ impl GstVideoPlayer {
             pipeline_handle: None,
             current_video: None,
             state: PlaybackState::Stopped,
+            generation: 0,
             loop_count: 0,
         })
     }
 
     pub fn loop_count(&self) -> u64 {
         self.loop_count
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn output_name(&self) -> &str {
+        &self.output_name
     }
 
     pub fn update_geometry(&mut self, width: u32, height: u32) -> Result<()> {
@@ -65,10 +87,18 @@ impl GstVideoPlayer {
         }
         Ok(())
     }
-}
 
-impl VideoPlayer for GstVideoPlayer {
-    fn play(&mut self, video: &Path) -> Result<()> {
+    /// Plays a video with generation tracking and benchmark lifecycle event emissions.
+    pub fn play_with_generation(
+        &mut self,
+        video: &Path,
+        generation: u64,
+        old_generation: u64,
+    ) -> Result<()> {
+        let sid = crate::benchmark::session_id();
+        let video_id = crate::benchmark::safe_video_id(video);
+        let output = &self.output_name;
+
         // Seamless transition with Dual Pipeline:
         // 1. If an active pipeline exists, keep it running so old frames remain visible.
         // 2. Instantiate a new pipeline for the incoming video targeting the same layer surface.
@@ -78,9 +108,12 @@ impl VideoPlayer for GstVideoPlayer {
         // 6. Tear down the old pipeline (its subsurface is cleanly removed underneath).
         if self.pipeline_handle.is_some() {
             tracing::info!(
-                operation = "pipeline_switch",
-                video = ?video,
-                "[Player] Seamless transition: prerolling new video before releasing old"
+                event = "new_pipeline_created",
+                output = %output,
+                generation = generation,
+                video_id = %video_id,
+                session_id = %sid,
+                "[Player] New pipeline created for video switch"
             );
 
             let new_handle = unsafe {
@@ -92,6 +125,14 @@ impl VideoPlayer for GstVideoPlayer {
                     video,
                 )?
             };
+
+            tracing::info!(
+                event = "new_pipeline_preroll_started",
+                output = %output,
+                generation = generation,
+                session_id = %sid,
+                "[Player] New pipeline preroll started"
+            );
 
             // Transition to Paused so preroll renders the first frame into waylandsink subsurface
             new_handle.pipeline.set_state(gstreamer::State::Paused)?;
@@ -108,26 +149,88 @@ impl VideoPlayer for GstVideoPlayer {
                 "[Player] Preroll completed"
             );
 
+            tracing::info!(
+                event = "new_pipeline_displayable",
+                output = %output,
+                generation = generation,
+                session_id = %sid,
+                "[Player] New pipeline first frame displayable"
+            );
+
             // Now transition new pipeline to Playing
             new_handle.pipeline.set_state(gstreamer::State::Playing)?;
 
+            tracing::debug!(
+                event = "pipeline_playing",
+                output = %output,
+                generation = generation,
+                session_id = %sid,
+                "[Player] New pipeline transitioned to Playing"
+            );
+
             // Swap out old handle and tear it down cleanly
             let old_handle = self.pipeline_handle.replace(new_handle);
-            if let Some(old) = old_handle
-                && let Err(e) = old.pipeline.set_state(gstreamer::State::Null)
-            {
-                tracing::warn!(operation = "pipeline_teardown", error = %e, "[Player] Failed to set old pipeline state to Null");
+            tracing::info!(
+                event = "video_switch_committed",
+                output = %output,
+                generation = generation,
+                session_id = %sid,
+                "[Player] Video switch committed"
+            );
+
+            if let Some(old) = old_handle {
+                tracing::info!(
+                    event = "old_pipeline_teardown_started",
+                    output = %output,
+                    generation = old_generation,
+                    session_id = %sid,
+                    "[Player] Old pipeline teardown started"
+                );
+                if let Err(e) = old.pipeline.set_state(gstreamer::State::Null) {
+                    tracing::warn!(
+                        event = "pipeline_error",
+                        output = %output,
+                        generation = old_generation,
+                        session_id = %sid,
+                        error = %e,
+                        "[Player] Failed to set old pipeline state to Null"
+                    );
+                }
+                tracing::info!(
+                    event = "old_pipeline_teardown_completed",
+                    output = %output,
+                    generation = old_generation,
+                    session_id = %sid,
+                    "[Player] Old pipeline teardown completed"
+                );
             }
 
             self.current_video = Some(video.to_path_buf());
             self.state = PlaybackState::Playing;
+            self.generation = generation;
             self.loop_count = 0;
 
-            tracing::info!(operation = "pipeline_switch_complete", video = ?video, "[Player] Seamless transition finished");
+            tracing::info!(
+                event = "playback_started",
+                output = %output,
+                generation = generation,
+                video_id = %video_id,
+                session_id = %sid,
+                "[Player] Playback started after video switch"
+            );
             return Ok(());
         }
 
         // Initial playback: create pipeline and start
+        tracing::info!(
+            event = "pipeline_created",
+            output = %output,
+            generation = generation,
+            video_id = %video_id,
+            session_id = %sid,
+            "[Player] Pipeline created for initial playback"
+        );
+
         let handle = unsafe {
             PipelineHandle::new(
                 self.raw_display_ptr,
@@ -140,20 +243,57 @@ impl VideoPlayer for GstVideoPlayer {
 
         handle.pipeline.set_state(gstreamer::State::Playing)?;
 
+        tracing::debug!(
+            event = "pipeline_playing",
+            output = %output,
+            generation = generation,
+            session_id = %sid,
+            "[Player] Initial pipeline transitioned to Playing"
+        );
+
         self.pipeline_handle = Some(handle);
         self.current_video = Some(video.to_path_buf());
         self.state = PlaybackState::Playing;
+        self.generation = generation;
         self.loop_count = 0;
 
-        tracing::info!(operation = "pipeline_start", video = ?video, "[Player] Started initial playback");
+        tracing::info!(
+            event = "playback_started",
+            output = %output,
+            generation = generation,
+            video_id = %video_id,
+            session_id = %sid,
+            "[Player] Initial playback started"
+        );
         Ok(())
+    }
+}
+
+impl VideoPlayer for GstVideoPlayer {
+    fn play(&mut self, video: &Path) -> Result<()> {
+        let current_gen = self.generation;
+        self.play_with_generation(video, current_gen.saturating_add(1), current_gen)
     }
 
     fn pause(&mut self) -> Result<()> {
         if let Some(ref handle) = self.pipeline_handle {
             handle.pipeline.set_state(gstreamer::State::Paused)?;
             self.state = PlaybackState::Paused;
-            tracing::info!(operation = "playback_pause", "[Player] Playback PAUSED");
+            let sid = crate::benchmark::session_id();
+            tracing::debug!(
+                event = "pipeline_paused",
+                output = %self.output_name,
+                generation = self.generation,
+                session_id = %sid,
+                "[Player] Pipeline state set to Paused"
+            );
+            tracing::info!(
+                event = "playback_paused",
+                output = %self.output_name,
+                generation = self.generation,
+                session_id = %sid,
+                "[Player] Playback PAUSED"
+            );
         }
         Ok(())
     }
@@ -162,19 +302,54 @@ impl VideoPlayer for GstVideoPlayer {
         if let Some(ref handle) = self.pipeline_handle {
             handle.pipeline.set_state(gstreamer::State::Playing)?;
             self.state = PlaybackState::Playing;
-            tracing::info!(operation = "playback_resume", "[Player] Playback RESUMED");
+            let sid = crate::benchmark::session_id();
+            tracing::debug!(
+                event = "pipeline_playing",
+                output = %self.output_name,
+                generation = self.generation,
+                session_id = %sid,
+                "[Player] Pipeline state set to Playing"
+            );
+            tracing::info!(
+                event = "playback_resumed",
+                output = %self.output_name,
+                generation = self.generation,
+                session_id = %sid,
+                "[Player] Playback RESUMED"
+            );
         }
         Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
         if let Some(handle) = self.pipeline_handle.take() {
+            let sid = crate::benchmark::session_id();
             if let Err(e) = handle.pipeline.set_state(gstreamer::State::Null) {
-                tracing::warn!(operation = "pipeline_teardown", error = %e, "[Player] Failed to set pipeline state to Null during stop");
+                tracing::warn!(
+                    event = "pipeline_error",
+                    output = %self.output_name,
+                    generation = self.generation,
+                    session_id = %sid,
+                    error = %e,
+                    "[Player] Failed to set pipeline state to Null during stop"
+                );
             }
+            tracing::debug!(
+                event = "pipeline_stopped",
+                output = %self.output_name,
+                generation = self.generation,
+                session_id = %sid,
+                "[Player] Pipeline state set to Null"
+            );
             self.state = PlaybackState::Stopped;
             self.current_video = None;
-            tracing::info!(operation = "playback_stop", "[Player] Playback STOPPED");
+            tracing::info!(
+                event = "playback_stopped",
+                output = %self.output_name,
+                generation = self.generation,
+                session_id = %sid,
+                "[Player] Playback STOPPED"
+            );
         }
         Ok(())
     }
@@ -200,9 +375,13 @@ impl VideoPlayer for GstVideoPlayer {
             match msg.view() {
                 MessageView::Eos(..) => {
                     self.loop_count += 1;
+                    let sid = crate::benchmark::session_id();
                     tracing::debug!(
-                        operation = "eos_loop",
-                        cycle = self.loop_count,
+                        event = "playback_loop",
+                        output = %self.output_name,
+                        generation = self.generation,
+                        loop_count = self.loop_count,
+                        session_id = %sid,
                         "[Player] EOS reached; seeking to 0 for seamless loop"
                     );
                     let res = handle.pipeline.seek_simple(
@@ -214,8 +393,12 @@ impl VideoPlayer for GstVideoPlayer {
                     }
                 }
                 MessageView::Error(err) => {
+                    let sid = crate::benchmark::session_id();
                     tracing::error!(
-                        operation = "gst_bus_error",
+                        event = "pipeline_error",
+                        output = %self.output_name,
+                        generation = self.generation,
+                        session_id = %sid,
                         error = %err.error(),
                         debug = ?err.debug(),
                         "[Player] GStreamer Error received from bus"
