@@ -20,6 +20,7 @@ mkdir -p "${BIN_DEST}"
 echo "[2/5] Installing binaries to ${BIN_DEST}..."
 cp "${REPO_DIR}/target/release/fluffy" "${BIN_DEST}/"
 cp "${REPO_DIR}/target/release/fluffy-settings" "${BIN_DEST}/"
+cp "${REPO_DIR}/target/release/fluffy-bench" "${BIN_DEST}/"
 
 # 3. Install systemd user service
 echo "[3/5] Installing systemd --user service..."
