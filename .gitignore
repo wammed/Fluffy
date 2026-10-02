@@ -22,3 +22,6 @@ target
 
 # Images and Movies
 *.mp4
+
+# Benchmark Script
+fluffy-long-bench.fish
