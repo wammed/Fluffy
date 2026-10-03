@@ -19,12 +19,18 @@ pub struct PipelineHandle {
     pub overlay: gstreamer_video::VideoOverlay,
     pub bus: gstreamer::Bus,
     pub gst_wl_context: gstreamer::Context,
+    pub output_name: String,
+    pub generation: u64,
+    pub video_id: String,
+    pub session_id: String,
 }
 
 impl PipelineHandle {
     /// # Safety
     /// `raw_display_ptr` must be a valid pointer to a `wl_display`.
     pub unsafe fn new(
+        output_name: impl Into<String>,
+        generation: u64,
         raw_display_ptr: *mut std::ffi::c_void,
         raw_surface_ptr: usize,
         width: u32,
@@ -99,13 +105,34 @@ impl PipelineHandle {
             "[Pipeline] Created GStreamer playbin pipeline with waylandsink"
         );
 
+        let output_name = output_name.into();
+        let video_id = crate::benchmark::safe_video_id(video_path);
+        let session_id = crate::benchmark::session_id().to_string();
+
         Ok(Self {
             pipeline,
             sink,
             overlay,
             bus,
             gst_wl_context,
+            output_name,
+            generation,
+            video_id,
+            session_id,
         })
+    }
+}
+
+impl Drop for PipelineHandle {
+    fn drop(&mut self) {
+        tracing::info!(
+            event = "old_pipeline_handle_dropped",
+            output = %self.output_name,
+            generation = self.generation,
+            video_id = %self.video_id,
+            session_id = %self.session_id,
+            "[Pipeline] Old pipeline handle dropped in Rust (Rust object dropped; GStreamer resources may still be releasing asynchronously)"
+        );
     }
 }
 
@@ -117,7 +144,17 @@ mod tests {
     fn test_pipeline_creation_nonexistent_file_fails() {
         let _ = gstreamer::init();
         let nonexistent = Path::new("/tmp/fluffy_nonexistent_pipeline_video.mp4");
-        let res = unsafe { PipelineHandle::new(std::ptr::null_mut(), 0, 1920, 1080, nonexistent) };
+        let res = unsafe {
+            PipelineHandle::new(
+                "default",
+                1,
+                std::ptr::null_mut(),
+                0,
+                1920,
+                1080,
+                nonexistent,
+            )
+        };
         assert!(res.is_err());
     }
 }

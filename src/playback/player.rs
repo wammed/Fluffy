@@ -118,6 +118,8 @@ impl GstVideoPlayer {
 
             let new_handle = unsafe {
                 PipelineHandle::new(
+                    &self.output_name,
+                    generation,
                     self.raw_display_ptr,
                     self.raw_surface_ptr,
                     self.width,
@@ -197,6 +199,13 @@ impl GstVideoPlayer {
                     );
                 }
                 tracing::info!(
+                    event = "old_pipeline_set_null_returned",
+                    output = %output,
+                    generation = old_generation,
+                    session_id = %sid,
+                    "[Player] Old pipeline set_state(NULL) returned (API returned; internal resources may still be releasing asynchronously)"
+                );
+                tracing::info!(
                     event = "old_pipeline_teardown_completed",
                     output = %output,
                     generation = old_generation,
@@ -233,6 +242,8 @@ impl GstVideoPlayer {
 
         let handle = unsafe {
             PipelineHandle::new(
+                &self.output_name,
+                generation,
                 self.raw_display_ptr,
                 self.raw_surface_ptr,
                 self.width,
