@@ -291,6 +291,7 @@ impl WallpaperDaemon {
                     is_converting: self.job_manager.is_converting(),
                     converting_file: self.job_manager.current_converting_file(),
                     active_jobs: self.job_manager.active_jobs(),
+                    supports_fullscreen_detection: self.wayland_ctx.supports_fullscreen_detection(),
                 };
 
                 match serde_json::to_value(&status) {
@@ -725,6 +726,14 @@ impl WallpaperDaemon {
 
         // 1b. Check for dynamic output hotplug events (attach / detach)
         self.handle_output_events()?;
+
+        // 1c. Process any window fullscreen state changes from compositor
+        let fs_events = self.wayland_ctx.take_fullscreen_events();
+        for is_fullscreen in fs_events {
+            if let Err(e) = self.handle_fullscreen_changed(is_fullscreen) {
+                tracing::warn!(error = %e, "[Daemon] Error handling window fullscreen state change");
+            }
+        }
 
         // 2. Poll GStreamer bus events for all managed outputs
         self.outputs.poll_events()?;

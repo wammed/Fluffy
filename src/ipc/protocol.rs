@@ -188,6 +188,8 @@ pub struct DaemonStatus {
     pub converting_file: Option<String>,
     #[serde(default)]
     pub active_jobs: Vec<ConversionJobInfo>,
+    #[serde(default)]
+    pub supports_fullscreen_detection: bool,
 }
 
 #[cfg(test)]
@@ -267,6 +269,7 @@ mod tests {
                 state: JobState::Transcoding,
                 error: None,
             }],
+            supports_fullscreen_detection: true,
         };
 
         let val = serde_json::to_value(&status).unwrap();

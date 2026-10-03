@@ -207,6 +207,7 @@ struct FluffySettingsApp {
     spinner_index: usize,
     is_fetching_status: bool,
     config: FluffyConfig,
+    supports_fullscreen_detection: bool,
 }
 
 impl Application for FluffySettingsApp {
@@ -266,6 +267,7 @@ impl Application for FluffySettingsApp {
             spinner_index: 0,
             is_fetching_status: true,
             config,
+            supports_fullscreen_detection: true,
         };
 
         app.core
@@ -300,6 +302,7 @@ impl Application for FluffySettingsApp {
                     Ok(status) => {
                         self.daemon_online = true;
                         self.outputs = status.outputs;
+                        self.supports_fullscreen_detection = status.supports_fullscreen_detection;
                         if status.is_converting {
                             self.is_converting = true;
                             if self.converting_file.is_none() {
@@ -309,6 +312,7 @@ impl Application for FluffySettingsApp {
                             self.is_converting = false;
                         }
                     }
+
                     Err(err) => {
                         self.daemon_online = false;
                         self.outputs.clear();
@@ -522,6 +526,13 @@ impl Application for FluffySettingsApp {
             }
 
             Message::TogglePauseOnFullscreen(val) => {
+                if self.daemon_online && !self.supports_fullscreen_detection && val {
+                    self.status_message = Some((
+                        "お使いのコンポジターは全画面検知プロトコルに対応していません".to_string(),
+                        true,
+                    ));
+                    return Task::none();
+                }
                 self.config.startup_and_wallpaper.pause_on_fullscreen = val;
                 let _ = self.config.save();
                 Task::none()
@@ -724,18 +735,51 @@ impl Application for FluffySettingsApp {
         .align_y(Alignment::Center)
         .spacing(12);
 
-        let fullscreen_card = row![
+        let compositor_unsupported = self.daemon_online && !self.supports_fullscreen_detection;
+
+        let fullscreen_desc = if compositor_unsupported {
             column![
-                text("Pause on Fullscreen / 全画面表示時の一時停止 (Coming soon / 準備中)").size(14),
-                text("ウィンドウが全画面表示されている間、GPU・CPUリソースを節約するため動画再生を一時停止します。（※今後のアップデートでデーモンに実装予定）").size(12),
+                text("Pause on Fullscreen / 全画面表示時の一時停止").size(14),
+                text("ウィンドウが全画面表示されている間、GPU・CPUリソースを節約するため動画再生を一時停止します。").size(12),
+                text("※ 現在のWaylandコンポジターが zwlr_foreign_toplevel_manager_v1 に対応していないため利用できません。")
+                    .size(11),
             ]
             .spacing(2)
-            .width(Length::Fill),
-            toggler(self.config.startup_and_wallpaper.pause_on_fullscreen)
-                .on_toggle(Message::TogglePauseOnFullscreen)
-        ]
-        .align_y(Alignment::Center)
-        .spacing(12);
+            .width(Length::Fill)
+        } else {
+            column![
+                text("Pause on Fullscreen / 全画面表示時の一時停止").size(14),
+                text("ウィンドウが全画面表示されている間、GPU・CPUリソースを節約するため動画再生を一時停止します。").size(12),
+            ]
+            .spacing(2)
+            .width(Length::Fill)
+        };
+
+        let compositor_label = if !self.daemon_online {
+            text("⚪ デーモン未接続").size(12)
+        } else if self.supports_fullscreen_detection {
+            text("🟢 コンポジター対応").size(12)
+        } else {
+            text("⚠️ コンポジター非対応").size(12)
+        };
+
+        let fullscreen_toggle_area = if compositor_unsupported {
+            row![compositor_label, toggler(false)]
+                .align_y(Alignment::Center)
+                .spacing(8)
+        } else {
+            row![
+                compositor_label,
+                toggler(self.config.startup_and_wallpaper.pause_on_fullscreen)
+                    .on_toggle(Message::TogglePauseOnFullscreen)
+            ]
+            .align_y(Alignment::Center)
+            .spacing(8)
+        };
+
+        let fullscreen_card = row![fullscreen_desc, fullscreen_toggle_area,]
+            .align_y(Alignment::Center)
+            .spacing(12);
 
         let settings_box = column![
             container(restore_card).padding(10).width(Length::Fill),

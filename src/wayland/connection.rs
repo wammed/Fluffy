@@ -7,9 +7,13 @@ use smithay_client_toolkit::{
     shm::Shm,
 };
 use wayland_client::{
-    Connection, EventQueue, QueueHandle,
+    Connection, EventQueue, Proxy, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_output, wl_surface},
+};
+use wayland_protocols_wlr::foreign_toplevel::v1::client::{
+    zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
+    zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
 };
 
 use crate::error::{FluffyError, Result};
@@ -31,7 +35,8 @@ pub struct OutputGeometry {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+use std::collections::{HashMap, HashSet};
+
 pub enum WaylandOutputEvent {
     AddedOrUpdated(wl_output::WlOutput),
     Destroyed(wl_output::WlOutput),
@@ -44,6 +49,11 @@ pub struct WaylandState {
     pub layer_shell: LayerShell,
     pub shm: Shm,
     pub output_events: Vec<WaylandOutputEvent>,
+    pub foreign_toplevel_manager: Option<ZwlrForeignToplevelManagerV1>,
+    pub fullscreen_toplevels: HashSet<wayland_client::backend::ObjectId>,
+    pub pending_toplevel_states: HashMap<wayland_client::backend::ObjectId, bool>,
+    pub fullscreen_events: Vec<bool>,
+    pub supports_fullscreen_detection: bool,
 }
 
 impl ProvidesRegistryState for WaylandState {
@@ -145,6 +155,76 @@ impl smithay_client_toolkit::shm::ShmHandler for WaylandState {
     }
 }
 
+impl wayland_client::Dispatch<ZwlrForeignToplevelManagerV1, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwlrForeignToplevelManagerV1,
+        event: zwlr_foreign_toplevel_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_foreign_toplevel_manager_v1::Event::Toplevel { toplevel: _ } => {
+                // New toplevel handle created, queue handles tracking via ZwlrForeignToplevelHandleV1 dispatch
+            }
+            zwlr_foreign_toplevel_manager_v1::Event::Finished => {
+                tracing::info!("[Wayland] foreign toplevel manager finished");
+                state.foreign_toplevel_manager = None;
+                state.supports_fullscreen_detection = false;
+            }
+            _ => {}
+        }
+    }
+}
+
+impl wayland_client::Dispatch<ZwlrForeignToplevelHandleV1, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        proxy: &ZwlrForeignToplevelHandleV1,
+        event: zwlr_foreign_toplevel_handle_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_foreign_toplevel_handle_v1::Event::State { state: state_bytes } => {
+                let is_fullscreen = state_bytes.as_chunks::<4>().0.iter().any(|chunk| {
+                    let val = u32::from_ne_bytes(*chunk);
+                    val == zwlr_foreign_toplevel_handle_v1::State::Fullscreen as u32
+                });
+                state
+                    .pending_toplevel_states
+                    .insert(proxy.id(), is_fullscreen);
+            }
+            zwlr_foreign_toplevel_handle_v1::Event::Done => {
+                let was_any_fullscreen = !state.fullscreen_toplevels.is_empty();
+                if let Some(&is_fullscreen) = state.pending_toplevel_states.get(&proxy.id()) {
+                    if is_fullscreen {
+                        state.fullscreen_toplevels.insert(proxy.id());
+                    } else {
+                        state.fullscreen_toplevels.remove(&proxy.id());
+                    }
+                }
+                let is_any_fullscreen = !state.fullscreen_toplevels.is_empty();
+                if was_any_fullscreen != is_any_fullscreen {
+                    state.fullscreen_events.push(is_any_fullscreen);
+                }
+            }
+            zwlr_foreign_toplevel_handle_v1::Event::Closed => {
+                let was_any_fullscreen = !state.fullscreen_toplevels.is_empty();
+                state.pending_toplevel_states.remove(&proxy.id());
+                state.fullscreen_toplevels.remove(&proxy.id());
+                let is_any_fullscreen = !state.fullscreen_toplevels.is_empty();
+                if was_any_fullscreen != is_any_fullscreen {
+                    state.fullscreen_events.push(is_any_fullscreen);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 smithay_client_toolkit::delegate_registry!(WaylandState);
 smithay_client_toolkit::delegate_dispatch2!(WaylandState);
 
@@ -163,6 +243,29 @@ impl WaylandContext {
         let shm = Shm::bind(&globals, &qh)
             .map_err(|e| FluffyError::Wayland(format!("Failed to bind wl_shm: {e}")))?;
 
+        // Pre-check if compositor advertises foreign-toplevel protocol
+        let has_foreign_toplevel = globals.contents().with_list(|list| {
+            list.iter()
+                .any(|g| g.interface == "zwlr_foreign_toplevel_manager_v1")
+        });
+
+        let foreign_toplevel_manager = if has_foreign_toplevel {
+            tracing::info!(
+                operation = "foreign_toplevel_detect",
+                "[Wayland] Compositor supports foreign-toplevel protocol: fullscreen detection available"
+            );
+            registry_state
+                .bind_one::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 1..=3, ())
+                .ok()
+        } else {
+            tracing::warn!(
+                operation = "foreign_toplevel_detect",
+                "[Wayland] Compositor does NOT advertise foreign-toplevel protocol: auto-pause on fullscreen unavailable"
+            );
+            None
+        };
+        let supports_fullscreen_detection = foreign_toplevel_manager.is_some();
+
         let mut state = WaylandState {
             registry_state,
             output_state,
@@ -170,6 +273,11 @@ impl WaylandContext {
             layer_shell,
             shm,
             output_events: Vec::new(),
+            foreign_toplevel_manager,
+            fullscreen_toplevels: HashSet::new(),
+            pending_toplevel_states: HashMap::new(),
+            fullscreen_events: Vec::new(),
+            supports_fullscreen_detection,
         };
 
         // Roundtrip to enumerate globals & outputs
@@ -276,5 +384,16 @@ impl WaylandContext {
             tracing::warn!(error = %e, "[Wayland] Error flushing connection during dispatch_pending");
         }
         Ok(())
+    }
+
+    /// Whether the connected compositor advertises and supports the foreign-toplevel protocol
+    /// used for automatically pausing playback when windows are fullscreen.
+    pub fn supports_fullscreen_detection(&self) -> bool {
+        self.state.supports_fullscreen_detection
+    }
+
+    /// Takes any queued fullscreen state changes (true = fullscreen active, false = fullscreen cleared).
+    pub fn take_fullscreen_events(&mut self) -> Vec<bool> {
+        std::mem::take(&mut self.state.fullscreen_events)
     }
 }
