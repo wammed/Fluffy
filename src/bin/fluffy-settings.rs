@@ -510,16 +510,12 @@ impl Application for FluffySettingsApp {
                     }
                     Ok(out) => {
                         let err_str = String::from_utf8_lossy(&out.stderr);
-                        self.status_message = Some((
-                            format!("systemd の設定に失敗しました: {err_str}"),
-                            true,
-                        ));
+                        self.status_message =
+                            Some((format!("systemd の設定に失敗しました: {err_str}"), true));
                     }
                     Err(e) => {
-                        self.status_message = Some((
-                            format!("systemctl の実行に失敗しました: {e}"),
-                            true,
-                        ));
+                        self.status_message =
+                            Some((format!("systemctl の実行に失敗しました: {e}"), true));
                     }
                 }
                 Task::none()

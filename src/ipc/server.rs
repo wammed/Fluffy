@@ -186,7 +186,8 @@ impl IpcServer {
                     match serde_json::from_str::<RequestEnvelope>(trimmed) {
                         Ok(req) => {
                             if let Err(err) = req.validate() {
-                                let resp = ResponseEnvelope::failure(req.request_id, err.to_string());
+                                let resp =
+                                    ResponseEnvelope::failure(req.request_id, err.to_string());
                                 let _ = Self::send_response_to_stream(&mut client.stream, &resp);
                                 disconnected.push(client_id);
                                 break;
@@ -213,7 +214,10 @@ impl IpcServer {
                 match client.stream.read(&mut probe) {
                     Ok(0) => {
                         // Client disconnected while waiting for response
-                        tracing::debug!(client_id = client_id.0, "[IPC] Client disconnected while awaiting response");
+                        tracing::debug!(
+                            client_id = client_id.0,
+                            "[IPC] Client disconnected while awaiting response"
+                        );
                         disconnected.push(client_id);
                     }
                     Ok(_) => {
