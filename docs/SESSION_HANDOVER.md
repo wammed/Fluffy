@@ -182,8 +182,8 @@ Per project documentation standards, items are tracked by five clear verificatio
     - **4K30 Dual Output (DP-1 + DP-2)**: 43.9% CPU, 854.1 MB RSS, 50.6% GPU Decoder.
   - Full details archived in [`docs/BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md).
 - [x] **Binary Size Optimization (Verified)**:
-  - Resident daemon release binary: **3.2 MB** (zero GUI bloat, minimal footprint).
-  - Settings GUI release binary: **30 MB**.
+  - Resident daemon release binary: **4.7 MB** (**3.3 MB** stripped, zero GUI bloat).
+  - Settings GUI release binary: **30 MB** (**21 MB** stripped).
 
 ### 2.2 Future Polish Items (Non-blocking / Backlog)
 1. **Direct client binding of `wp_viewporter`** (currently handled internally by `waylandsink` and layer-shell 4-edge anchors).
@@ -411,8 +411,8 @@ Fluffy/
 1. **Current State:**
    All 7 Planned Phases are **COMPLETE** (Real-hardware-tested on NVIDIA RTX 3080 & COSMIC Desktop).
 2. **Key Deliverables:**
-   - Resident wallpaper daemon: `target/release/fluffy` (3.2 MB)
-   - COSMIC Settings GUI: `target/release/fluffy-settings` (30 MB)
+   - Resident wallpaper daemon: `target/release/fluffy` (4.7 MB / 3.3 MB stripped)
+   - COSMIC Settings GUI: `target/release/fluffy-settings` (30 MB / 21 MB stripped)
    - systemd service unit: `data/systemd/fluffy.service`
    - Desktop entry: `data/desktop/com.github.fluffy.Fluffy.desktop`
    - Install helper: `scripts/install-desktop-integration.sh`

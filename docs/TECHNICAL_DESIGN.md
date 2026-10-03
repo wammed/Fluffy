@@ -1056,7 +1056,7 @@ Implemented and verified on real hardware:
 - [x] Flexible positional and flag CLI parsing across all subcommands.
 - [x] Systematic performance benchmark suite (`scripts/benchmark.sh`) measuring CPU%, RSS MB, GPU 3D%, GPU NVDEC% across 1080p, 1440p, 4K on dual displays.
 - [x] Benchmarking documented in [`docs/BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md).
-- [x] Minimal release binary footprints: resident daemon **3.2 MB**, GUI **30 MB**.
+- [x] Minimal release binary footprints: resident daemon **4.7 MB** (**3.3 MB** stripped), GUI **30 MB** (**21 MB** stripped).
 
 ------------------------------------------------------------------------
 

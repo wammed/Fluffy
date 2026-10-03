@@ -34,7 +34,7 @@
 - **Zero-Flicker Seamless Switching**: Features dual-pipeline pre-roll architecture. Transitions between loop videos render seamlessly with zero black frames, flashing, or compositor resizes (verified on physical testbed).
 - **Hardware-Accelerated Decoding (Preferred & Auto-Detected)**: Hardware decode is preferred; the actual decoder depends on the GStreamer environment and installed drivers. Verified with NVDEC (`nvh264dec`) on the project testbed (NVIDIA GeForce RTX 3080), maintaining minimal CPU utilization and heat, with transparent software fallback (`avdec_h264`).
 - **Architectural Isolation (Daemon vs. GUI)**:
-  - **Resident Daemon (`fluffy`)**: Micro-footprint of only **3.2 MB** binary size and **40 MB RSS** RAM at idle.
+  - **Resident Daemon (`fluffy`)**: Micro-footprint of only **4.7 MB** (stripped: **3.3 MB**) binary size and **40 MB RSS** RAM at idle.
   - **Settings GUI (`fluffy-settings`)**: Ephemeral client built with `libcosmic` that connects over Unix domain socket IPC and exits immediately when done, leaving the daemon completely unbloated.
 - **Deterministic 4K Normalization & Atomic Storage**: Validates arbitrary video files via `ffprobe` (strictly enforcing container format and 4K boundaries) and transcodes to standard H.264/30fps profiles with SHA-256 content addressing in `~/.local/share/fluffy/storage/`.
 - **Dynamic Display Hotplug & Geometry Tracking**: Automatically detects monitor connections, disconnections, and resolution/scale changes in real-time without daemon restarts, with dynamic shared memory buffer pool recalculation to prevent crashes.
@@ -240,7 +240,7 @@ User / Autostart / Settings GUI / CLI
        │
        ▼ (Unix Domain Socket IPC: $XDG_RUNTIME_DIR/fluffy.sock)
 ┌─────────────────────────────────────────────────────────────────┐
-│ Wallpaper Daemon (Resident Process: ~3.2 MB binary, ~40 MB RSS) │
+│ Wallpaper Daemon (Resident Process: ~4.7 MB binary, ~40 MB RSS) │
 │                                                                 │
 │  ├─ Storage & Normalization Subsystem (~/.local/share/fluffy/storage/) │
 │  │   ├─ ffprobe validation (4K resolution boundary check)       │

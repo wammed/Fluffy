@@ -171,8 +171,8 @@ COSMIC Desktop / Wayland 向けの軽量ループ動画壁紙マネージャー�
     - **4K30 (DP-1 + DP-2)**: 43.9% CPU, 854.1 MB RSS, 50.6% GPU Decoder.
   - 詳細レポート: [`docs/BENCHMARK_REPORT.ja.md`](BENCHMARK_REPORT.ja.md)
 - [x] **バイナリフットプリントの極小化**:
-  - 常駐デーモンリリースバイナリ: **3.2 MB** (GUI 依存ゼロ)。
-  - 設定 GUI リリースバイナリ: **30 MB**。
+  - 常駐デーモンリリースバイナリ: **4.7 MB** (strip後 **3.3 MB**、GUI 依存ゼロ)。
+  - 設定 GUI リリースバイナリ: **30 MB** (strip後 **21 MB**)。
 
 ### 2.2 将来の拡張課題 (バックログ)
 1. **クライアント側での `wp_viewporter` プロトコル直接バインド**: 現在は `waylandsink` および 4方向アンカーによるスケーリングで動作しており、クライアント直接バインドは将来のプロトコル拡張として管理。
@@ -396,8 +396,8 @@ Fluffy/
 1. **現在の状態:**
    全 7 フェーズの計画内容が **すべて完了** し、NVIDIA RTX 3080 ＋ COSMIC Desktop 実機環境にて動作確認済みです。
 2. **主要成果物:**
-   - 常駐壁紙デーモン: `target/release/fluffy` (3.2 MB)
-   - COSMIC 設定 GUI: `target/release/fluffy-settings` (30 MB)
+   - 常駐壁紙デーモン: `target/release/fluffy` (4.7 MB / strip後 3.3 MB)
+   - COSMIC 設定 GUI: `target/release/fluffy-settings` (30 MB / strip後 21 MB)
    - systemd サービスユニット: `data/systemd/fluffy.service`
    - デスクトップエントリ: `data/desktop/com.github.fluffy.Fluffy.desktop`
    - インストールスクリプト: `scripts/install-desktop-integration.sh`
