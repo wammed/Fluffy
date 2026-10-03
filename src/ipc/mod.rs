@@ -26,13 +26,6 @@ pub fn default_socket_path() -> PathBuf {
         return PathBuf::from(runtime_dir).join("fluffy.sock");
     }
 
-    let uid = unsafe { libc_getuid() };
+    let uid = rustix::process::getuid().as_raw();
     PathBuf::from(format!("/tmp/fluffy-{uid}.sock"))
-}
-
-unsafe fn libc_getuid() -> u32 {
-    unsafe extern "C" {
-        fn getuid() -> u32;
-    }
-    unsafe { getuid() }
 }

@@ -1,3 +1,4 @@
+use clap::{Parser, Subcommand};
 use fluffy::{
     cache::CacheManager,
     config::{DaemonState, FluffyConfig},
@@ -13,176 +14,128 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
-fn print_help() {
-    println!(
-        r#"Fluffy Video Wallpaper Manager - Phase 4 (Cache & Import)
+#[derive(Parser, Debug)]
+#[command(
+    name = "fluffy",
+    author,
+    version,
+    about = "Fluffy Video Wallpaper Manager for COSMIC Desktop / Wayland",
+    long_about = None
+)]
+pub struct Cli {
+    /// Unix socket path (default: $XDG_RUNTIME_DIR/fluffy.sock)
+    #[arg(long, global = true)]
+    pub socket: Option<PathBuf>,
 
-USAGE:
-    fluffy [COMMAND] [OPTIONS]
+    #[command(subcommand)]
+    pub command: Option<Commands>,
 
-COMMANDS:
-    daemon, run          Run the wallpaper daemon (default if no command given)
-    status               Query daemon and output status via IPC
-    set-video <PATH>     Change video wallpaper via IPC (validates & normalizes to cache)
-    import <PATH>        Validate and import video into cache without playing
-    pause                Pause video playback
-    resume               Resume video playback
-    stop                 Stop video playback
-    reload               Reload current wallpaper video
-    mark <LABEL>         Record a benchmark workload marker event via IPC
-    config               Show or update startup and wallpaper settings
-    help, --help         Print this help message
-
-OPTIONS for 'daemon' / 'run':
-    --socket <PATH>      Unix socket path (default: $XDG_RUNTIME_DIR/fluffy.sock)
-    --output <NAME>      Bind to specific Wayland output (e.g. DP-1)
-    --video <PATH>       Start playback immediately with specified video
-    --loop               Continuous test loop
-    --switch-loop        Continuous alternating video test loop
-
-OPTIONS for IPC client commands:
-    --socket <PATH>      Target daemon Unix socket path
-    --output <NAME>      Target specific output (default: all outputs)
-    --generation <NUM>   Generation number for video switch
-    --timeout <SECS>     IPC response timeout (default: 60s for set-video, 5s for others)
-
-OPTIONS for 'config':
-    --restore-on-startup <BOOL>  Restore last wallpaper on daemon startup (true/false)
-    --autostart <BOOL>           Enable/disable daemon autostart on login via systemd (true/false)
-    --pause-fullscreen <BOOL>    Configure pause on fullscreen windows (true/false)
-"#
-    );
+    /// Path to a video file to play immediately (shortcut for daemon with video)
+    #[arg(value_name = "VIDEO_PATH")]
+    pub direct_video: Option<PathBuf>,
 }
 
-fn parse_positional_path(args: &[String]) -> Option<String> {
-    let mut i = 0;
-    while i < args.len() {
-        if (args[i] == "--socket"
-            || args[i] == "--output"
-            || args[i] == "--generation"
-            || args[i] == "--timeout"
-            || args[i] == "--video")
-            && i + 1 < args.len()
-        {
-            i += 2;
-            continue;
-        }
-        if args[i].starts_with("--") {
-            i += 1;
-            continue;
-        }
-        if args[i] == "set-video"
-            || args[i] == "set_video"
-            || args[i] == "import"
-            || args[i] == "mark"
-            || args[i] == "bench"
-        {
-            i += 1;
-            continue;
-        }
-        return Some(args[i].clone());
-    }
-    None
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Run the wallpaper daemon (default command)
+    #[command(alias = "run")]
+    Daemon {
+        /// Bind to a specific Wayland output (e.g. DP-1)
+        #[arg(long)]
+        output: Option<String>,
+
+        /// Start playback immediately with specified video
+        #[arg(long)]
+        video: Option<PathBuf>,
+    },
+
+    /// Query daemon and output status via IPC
+    Status,
+
+    /// Change video wallpaper via IPC (validates & normalizes to storage)
+    #[command(alias = "set_video")]
+    SetVideo {
+        /// Path to the video file
+        path: PathBuf,
+
+        /// Target specific output (default: all outputs)
+        #[arg(long)]
+        output: Option<String>,
+
+        /// Generation number for video switch
+        #[arg(long)]
+        generation: Option<u64>,
+
+        /// IPC response timeout in seconds (default: 60)
+        #[arg(long, default_value = "60")]
+        timeout: u64,
+    },
+
+    /// Validate and import video into storage without playing
+    Import {
+        /// Path to the video file
+        path: PathBuf,
+    },
+
+    /// Pause video playback
+    Pause {
+        /// Target specific output (default: all outputs)
+        #[arg(long)]
+        output: Option<String>,
+    },
+
+    /// Resume video playback
+    Resume {
+        /// Target specific output (default: all outputs)
+        #[arg(long)]
+        output: Option<String>,
+    },
+
+    /// Stop video playback
+    Stop {
+        /// Target specific output (default: all outputs)
+        #[arg(long)]
+        output: Option<String>,
+    },
+
+    /// Reload current wallpaper video
+    Reload,
+
+    /// Record a benchmark workload marker event via IPC
+    Mark {
+        /// Label for benchmark marker
+        label: String,
+    },
+
+    /// Benchmark subcommands
+    Bench {
+        #[command(subcommand)]
+        subcommand: BenchCommands,
+    },
+
+    /// Show or update startup and wallpaper settings
+    Config {
+        /// Restore last wallpaper on daemon startup (true/false)
+        #[arg(long)]
+        restore_on_startup: Option<bool>,
+
+        /// Enable/disable daemon autostart on login via systemd (true/false)
+        #[arg(long)]
+        autostart: Option<bool>,
+
+        /// Configure pause on fullscreen windows (true/false)
+        #[arg(long)]
+        pause_fullscreen: Option<bool>,
+    },
 }
 
-fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    let raw_args = &args[1..];
-
-    // Find the command token, skipping any flag parameters
-    let mut command = "daemon";
-    let mut i = 0;
-    while i < raw_args.len() {
-        let arg = &raw_args[i];
-        if (arg == "--socket"
-            || arg == "--output"
-            || arg == "--video"
-            || arg == "--generation"
-            || arg == "--timeout")
-            && i + 1 < raw_args.len()
-        {
-            i += 2;
-            continue;
-        }
-        if arg.starts_with("--") {
-            if arg == "--help" || arg == "-h" {
-                command = "help";
-                break;
-            }
-            i += 1;
-            continue;
-        }
-        command = arg.as_str();
-        break;
-    }
-
-    match command {
-        "help" | "--help" | "-h" => {
-            print_help();
-            Ok(())
-        }
-        "status" => cmd_status(raw_args),
-        "set-video" | "set_video" => cmd_set_video(raw_args),
-        "import" => cmd_import(raw_args),
-        "pause" => cmd_pause(raw_args),
-        "resume" => cmd_resume(raw_args),
-        "stop" => cmd_stop(raw_args),
-        "reload" => cmd_reload(raw_args),
-        "mark" => cmd_mark(raw_args),
-        "bench" => cmd_bench(raw_args),
-        "config" => cmd_config(raw_args),
-        "daemon" | "run" => cmd_daemon(raw_args),
-        cmd => {
-            // Check if it's a file path meant for daemon initial video, or invalid command
-            if Path::new(cmd).exists() {
-                cmd_daemon(raw_args)
-            } else {
-                eprintln!("Unknown command: '{cmd}'. Run 'fluffy help' for usage.");
-                std::process::exit(1);
-            }
-        }
-    }
-}
-
-fn parse_socket_arg(args: &[String]) -> PathBuf {
-    for i in 0..args.len() {
-        if args[i] == "--socket" && i + 1 < args.len() {
-            return PathBuf::from(&args[i + 1]);
-        }
-    }
-    default_socket_path()
-}
-
-fn parse_output_arg(args: &[String]) -> Option<String> {
-    for i in 0..args.len() {
-        if args[i] == "--output" && i + 1 < args.len() {
-            return Some(args[i + 1].clone());
-        }
-    }
-    None
-}
-
-fn parse_generation_arg(args: &[String]) -> Option<u64> {
-    for i in 0..args.len() {
-        if args[i] == "--generation" && i + 1 < args.len() {
-            return args[i + 1].parse().ok();
-        }
-    }
-    None
-}
-
-fn parse_timeout_arg(args: &[String]) -> Option<std::time::Duration> {
-    for i in 0..args.len() {
-        if args[i] == "--timeout"
-            && i + 1 < args.len()
-            && let Ok(secs) = args[i + 1].parse::<u64>()
-        {
-            return Some(std::time::Duration::from_secs(secs));
-        }
-    }
-    None
+#[derive(Subcommand, Debug)]
+pub enum BenchCommands {
+    /// Record a benchmark mark
+    Mark { label: String },
 }
 
 fn init_logging() {
@@ -200,31 +153,55 @@ fn init_logging() {
         .try_init();
 }
 
-fn cmd_daemon(args: &[String]) -> Result<()> {
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let socket = cli.socket.unwrap_or_else(default_socket_path);
+
+    match cli.command {
+        Some(Commands::Daemon { output, video }) => {
+            cmd_daemon(&socket, output.as_deref(), video.as_deref())
+        }
+        Some(Commands::Status) => cmd_status(&socket),
+        Some(Commands::SetVideo {
+            path,
+            output,
+            generation,
+            timeout,
+        }) => cmd_set_video(
+            &socket,
+            &path,
+            output.as_deref(),
+            generation,
+            Duration::from_secs(timeout),
+        ),
+        Some(Commands::Import { path }) => cmd_import(&path),
+        Some(Commands::Pause { output }) => cmd_pause(&socket, output.as_deref()),
+        Some(Commands::Resume { output }) => cmd_resume(&socket, output.as_deref()),
+        Some(Commands::Stop { output }) => cmd_stop(&socket, output.as_deref()),
+        Some(Commands::Reload) => cmd_reload(&socket),
+        Some(Commands::Mark { label }) => cmd_mark(&socket, &label),
+        Some(Commands::Bench { subcommand }) => match subcommand {
+            BenchCommands::Mark { label } => cmd_mark(&socket, &label),
+        },
+        Some(Commands::Config {
+            restore_on_startup,
+            autostart,
+            pause_fullscreen,
+        }) => cmd_config(restore_on_startup, autostart, pause_fullscreen),
+        None => {
+            // Default: run daemon (with direct_video if given)
+            cmd_daemon(&socket, None, cli.direct_video.as_deref())
+        }
+    }
+}
+
+fn cmd_daemon(
+    socket_path: &Path,
+    requested_output: Option<&str>,
+    initial_video: Option<&Path>,
+) -> Result<()> {
     init_logging();
     tracing::info!("=== Fluffy Video Wallpaper Manager Daemon (Phase 7 Hardened) ===");
-
-    let socket_path = parse_socket_arg(args);
-    let requested_output = parse_output_arg(args);
-
-    let initial_video: Option<PathBuf> = {
-        let mut vid = None;
-        let mut i = 0;
-        while i < args.len() {
-            if args[i] == "--video" && i + 1 < args.len() {
-                vid = Some(PathBuf::from(&args[i + 1]));
-                break;
-            } else if (args[i] == "--socket" || args[i] == "--output") && i + 1 < args.len() {
-                i += 2;
-                continue;
-            } else if !args[i].starts_with("--") && Path::new(&args[i]).exists() {
-                vid = Some(PathBuf::from(&args[i]));
-                break;
-            }
-            i += 1;
-        }
-        vid
-    };
 
     let exit_flag = Arc::new(AtomicBool::new(false));
     {
@@ -236,17 +213,13 @@ fn cmd_daemon(args: &[String]) -> Result<()> {
         .ok();
     }
 
-    let mut daemon =
-        WallpaperDaemon::new(&socket_path, requested_output.as_deref(), exit_flag.clone())?;
+    let mut daemon = WallpaperDaemon::new(socket_path, requested_output, exit_flag)?;
 
-    // If an initial video was specified, start playing it
+    // If an initial video was specified, start playing it cleanly without going through IPC envelopes
     if let Some(video) = initial_video {
         tracing::info!("[Main] Starting initial playback: {:?}", video);
-        let req = fluffy::ipc::RequestEnvelope::new(0, fluffy::ipc::CommandType::SetVideo)
-            .with_path(video);
-        let resp = daemon.handle_request(&req);
-        if !resp.success {
-            tracing::error!("[Main] Initial video playback failed: {:?}", resp.error);
+        if let Err(e) = daemon.set_initial_video(video) {
+            tracing::error!("[Main] Initial video playback failed: {:?}", e);
         }
     }
 
@@ -254,9 +227,8 @@ fn cmd_daemon(args: &[String]) -> Result<()> {
     daemon.run()
 }
 
-fn cmd_status(args: &[String]) -> Result<()> {
-    let socket = parse_socket_arg(args);
-    let client = IpcClient::new(&socket);
+fn cmd_status(socket: &Path) -> Result<()> {
+    let client = IpcClient::new(socket);
     let status = client.status()?;
 
     println!("Fluffy Daemon Status (v{})", status.daemon_version);
@@ -296,17 +268,15 @@ fn cmd_status(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn cmd_set_video(args: &[String]) -> Result<()> {
-    let socket = parse_socket_arg(args);
-    let output = parse_output_arg(args);
-    let generation = parse_generation_arg(args);
-
-    let path_str = parse_positional_path(args)
-        .ok_or_else(|| FluffyError::Ipc("Missing video path for 'set-video'".to_string()))?;
-
-    let path = PathBuf::from(path_str);
+fn cmd_set_video(
+    socket: &Path,
+    path: &Path,
+    output: Option<&str>,
+    generation: Option<u64>,
+    timeout: Duration,
+) -> Result<()> {
     let abs_path = if path.is_absolute() {
-        path
+        path.to_path_buf()
     } else {
         env::current_dir()?.join(path)
     };
@@ -318,52 +288,41 @@ fn cmd_set_video(args: &[String]) -> Result<()> {
         )));
     }
 
-    let timeout = parse_timeout_arg(args).unwrap_or(std::time::Duration::from_secs(60));
     println!("[Fluffy] Requesting wallpaper change to: {:?}", abs_path);
     println!(
         "         (If normalization is required, daemon converts in background without interrupting current playback; waiting for completion...)"
     );
-    let client = IpcClient::with_timeout(&socket, timeout);
-    client.set_video(&abs_path, output.as_deref(), generation)?;
+    let client = IpcClient::with_timeout(socket, timeout);
+    client.set_video(&abs_path, output, generation)?;
 
     println!("[Fluffy] Wallpaper successfully applied!");
     Ok(())
 }
 
-fn cmd_pause(args: &[String]) -> Result<()> {
-    let socket = parse_socket_arg(args);
-    let output = parse_output_arg(args);
-    let client = IpcClient::new(&socket);
-    client.pause(output.as_deref())?;
+fn cmd_pause(socket: &Path, output: Option<&str>) -> Result<()> {
+    let client = IpcClient::new(socket);
+    client.pause(output)?;
     println!("Playback paused.");
     Ok(())
 }
 
-fn cmd_resume(args: &[String]) -> Result<()> {
-    let socket = parse_socket_arg(args);
-    let output = parse_output_arg(args);
-    let client = IpcClient::new(&socket);
-    client.resume(output.as_deref())?;
+fn cmd_resume(socket: &Path, output: Option<&str>) -> Result<()> {
+    let client = IpcClient::new(socket);
+    client.resume(output)?;
     println!("Playback resumed.");
     Ok(())
 }
 
-fn cmd_stop(args: &[String]) -> Result<()> {
-    let socket = parse_socket_arg(args);
-    let output = parse_output_arg(args);
-    let client = IpcClient::new(&socket);
-    client.stop(output.as_deref())?;
+fn cmd_stop(socket: &Path, output: Option<&str>) -> Result<()> {
+    let client = IpcClient::new(socket);
+    client.stop(output)?;
     println!("Playback stopped.");
     Ok(())
 }
 
-fn cmd_import(args: &[String]) -> Result<()> {
-    let path_str = parse_positional_path(args)
-        .ok_or_else(|| FluffyError::Ipc("Missing video path for 'import'".to_string()))?;
-
-    let path = PathBuf::from(path_str);
+fn cmd_import(path: &Path) -> Result<()> {
     let abs_path = if path.is_absolute() {
-        path
+        path.to_path_buf()
     } else {
         env::current_dir()?.join(path)
     };
@@ -389,114 +348,57 @@ fn cmd_import(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn cmd_reload(args: &[String]) -> Result<()> {
-    let socket = parse_socket_arg(args);
-    let client = IpcClient::new(&socket);
+fn cmd_reload(socket: &Path) -> Result<()> {
+    let client = IpcClient::new(socket);
     client.reload()?;
     println!("Reloaded wallpaper.");
     Ok(())
 }
 
-fn cmd_mark(args: &[String]) -> Result<()> {
-    let socket = parse_socket_arg(args);
-    let label = parse_positional_path(args)
-        .ok_or_else(|| FluffyError::Ipc("Missing label for 'mark'".to_string()))?;
-
-    let client = IpcClient::new(&socket);
-    client.mark(&label)?;
+fn cmd_mark(socket: &Path, label: &str) -> Result<()> {
+    let client = IpcClient::new(socket);
+    client.mark(label)?;
     println!("[Benchmark] Mark recorded: {}", label);
     Ok(())
 }
 
-fn cmd_bench(args: &[String]) -> Result<()> {
-    // Supports 'fluffy bench mark <LABEL>'
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "mark" {
-            let label = args.get(i + 1).cloned().ok_or_else(|| {
-                FluffyError::Ipc("Missing label for 'bench mark <LABEL>'".to_string())
-            })?;
-            let socket = parse_socket_arg(args);
-            let client = IpcClient::new(&socket);
-            client.mark(&label)?;
-            println!("[Benchmark] Mark recorded: {}", label);
-            return Ok(());
-        }
-        i += 1;
-    }
-
-    eprintln!("Unknown benchmark command. Usage: fluffy bench mark <LABEL>");
-    std::process::exit(1);
-}
-
-fn parse_bool_value(s: &str) -> Option<bool> {
-    match s.to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" | "enable" => Some(true),
-        "false" | "0" | "no" | "off" | "disable" => Some(false),
-        _ => None,
-    }
-}
-
-fn cmd_config(args: &[String]) -> Result<()> {
+fn cmd_config(
+    restore_on_startup: Option<bool>,
+    autostart: Option<bool>,
+    pause_fullscreen: Option<bool>,
+) -> Result<()> {
     let mut config = FluffyConfig::load();
     let mut modified = false;
 
-    let mut i = 0;
-    while i < args.len() {
-        if args[i] == "--restore-on-startup" && i + 1 < args.len() {
-            if let Some(val) = parse_bool_value(&args[i + 1]) {
-                config.startup_and_wallpaper.restore_on_startup = val;
-                modified = true;
-            } else {
-                eprintln!(
-                    "[Fluffy] Warning: invalid boolean value for --restore-on-startup: '{}' (use true/false)",
-                    args[i + 1]
-                );
+    if let Some(val) = restore_on_startup {
+        config.startup_and_wallpaper.restore_on_startup = val;
+        modified = true;
+    }
+
+    if let Some(val) = autostart {
+        config.startup_and_wallpaper.autostart_daemon = val;
+        let arg = if val { "enable" } else { "disable" };
+        match std::process::Command::new("systemctl")
+            .args(["--user", arg, "fluffy.service"])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                println!("[Fluffy] systemd fluffy.service {arg}d successfully.");
             }
-            i += 2;
-        } else if args[i] == "--autostart" && i + 1 < args.len() {
-            if let Some(val) = parse_bool_value(&args[i + 1]) {
-                config.startup_and_wallpaper.autostart_daemon = val;
-                let arg = if val { "enable" } else { "disable" };
-                match std::process::Command::new("systemctl")
-                    .args(["--user", arg, "fluffy.service"])
-                    .output()
-                {
-                    Ok(out) if out.status.success() => {
-                        println!("[Fluffy] systemd fluffy.service {arg}d successfully.");
-                    }
-                    Ok(out) => {
-                        let err = String::from_utf8_lossy(&out.stderr);
-                        eprintln!(
-                            "[Fluffy] Warning: Failed to {arg} fluffy.service via systemctl: {err}"
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("[Fluffy] Warning: Failed to execute systemctl: {e}");
-                    }
-                }
-                modified = true;
-            } else {
-                eprintln!(
-                    "[Fluffy] Warning: invalid boolean value for --autostart: '{}' (use true/false)",
-                    args[i + 1]
-                );
+            Ok(out) => {
+                let err = String::from_utf8_lossy(&out.stderr);
+                eprintln!("[Fluffy] Warning: Failed to {arg} fluffy.service via systemctl: {err}");
             }
-            i += 2;
-        } else if args[i] == "--pause-fullscreen" && i + 1 < args.len() {
-            if let Some(val) = parse_bool_value(&args[i + 1]) {
-                config.startup_and_wallpaper.pause_on_fullscreen = val;
-                modified = true;
-            } else {
-                eprintln!(
-                    "[Fluffy] Warning: invalid boolean value for --pause-fullscreen: '{}' (use true/false)",
-                    args[i + 1]
-                );
+            Err(e) => {
+                eprintln!("[Fluffy] Warning: Failed to execute systemctl: {e}");
             }
-            i += 2;
-        } else {
-            i += 1;
         }
+        modified = true;
+    }
+
+    if let Some(val) = pause_fullscreen {
+        config.startup_and_wallpaper.pause_on_fullscreen = val;
+        modified = true;
     }
 
     if modified {
@@ -516,7 +418,7 @@ fn cmd_config(args: &[String]) -> Result<()> {
         config.startup_and_wallpaper.autostart_daemon
     );
     println!(
-        "    pause_on_fullscreen: {} (Pause video when window is fullscreen - daemon support coming soon)",
+        "    pause_on_fullscreen: {} (Pause video when window is fullscreen)",
         config.startup_and_wallpaper.pause_on_fullscreen
     );
 

@@ -27,11 +27,25 @@ pub fn transcode_video<P: AsRef<Path>, Q: AsRef<Path>>(
     output_path: Q,
     probe_info: &VideoStreamInfo,
 ) -> Result<()> {
+    transcode_video_with_cancel(input_path, output_path, probe_info, None)
+}
+
+/// Transcodes an input video with an optional cancellation token.
+/// If `cancel_token` is set to true during processing, the `ffmpeg` subprocess is
+/// immediately killed, temporary files are removed, and `FluffyError::JobCancelled` is returned.
+pub fn transcode_video_with_cancel<P: AsRef<Path>, Q: AsRef<Path>>(
+    input_path: P,
+    output_path: Q,
+    probe_info: &VideoStreamInfo,
+    cancel_token: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
     let input = input_path.as_ref();
     let output = output_path.as_ref();
 
     let (target_w, target_h) = normalize_even_dimensions(probe_info.width, probe_info.height);
-
     let scale_filter = format!("scale={}:{}", target_w, target_h);
 
     let mut cmd = Command::new("ffmpeg");
@@ -72,44 +86,70 @@ pub fn transcode_video<P: AsRef<Path>, Q: AsRef<Path>>(
         "[Normalize] Transcoding video to standardized storage format"
     );
 
-    let output_res = cmd.output().map_err(|e| {
-        // Clean up partial output on execution failure
-        if let Err(cleanup_err) = fs::remove_file(output)
+    let cleanup_file = |path: &Path| {
+        if let Err(cleanup_err) = fs::remove_file(path)
             && cleanup_err.kind() != std::io::ErrorKind::NotFound
         {
             tracing::debug!(
                 operation = "cleanup",
                 error = %cleanup_err,
-                output = ?output,
-                "[Normalize] Failed to remove partial file on ffmpeg execution error"
+                output = ?path,
+                "[Normalize] Failed to remove partial file"
             );
         }
+    };
+
+    let mut child = cmd.spawn().map_err(|e| {
+        cleanup_file(output);
         tracing::error!(operation = "ffmpeg_exec", error = %e, "[Normalize] Failed to execute ffmpeg");
         FluffyError::Conversion(format!("Failed to execute ffmpeg: {e}"))
     })?;
 
-    if !output_res.status.success() {
-        // Ensure failed partial conversion is removed
-        if let Err(cleanup_err) = fs::remove_file(output)
-            && cleanup_err.kind() != std::io::ErrorKind::NotFound
+    // Monitor ffmpeg subprocess execution with cancellation polling
+    loop {
+        if let Some(token) = cancel_token
+            && token.load(Ordering::Relaxed)
         {
-            tracing::debug!(
-                operation = "cleanup",
-                error = %cleanup_err,
+            tracing::info!(
+                operation = "ffmpeg_cancel",
+                input = ?input,
                 output = ?output,
-                "[Normalize] Failed to remove partial file on ffmpeg exit failure"
+                "[Normalize] Transcode job was cancelled; killing ffmpeg subprocess"
             );
+            let _ = child.kill();
+            let _ = child.wait();
+            cleanup_file(output);
+            return Err(FluffyError::JobCancelled);
         }
-        let stderr = String::from_utf8_lossy(&output_res.stderr);
-        tracing::error!(
-            operation = "ffmpeg_transcode",
-            stderr = %stderr.trim(),
-            "[Normalize] ffmpeg transcoding failed"
-        );
-        return Err(FluffyError::Conversion(format!(
-            "ffmpeg transcoding failed: {}",
-            stderr.trim()
-        )));
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    cleanup_file(output);
+                    tracing::error!(
+                        operation = "ffmpeg_transcode",
+                        status = ?status,
+                        "[Normalize] ffmpeg transcoding failed with non-zero exit status"
+                    );
+                    return Err(FluffyError::Conversion(format!(
+                        "ffmpeg transcoding failed with exit status: {status}"
+                    )));
+                }
+                break;
+            }
+            Ok(None) => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                cleanup_file(output);
+                tracing::error!(operation = "ffmpeg_wait", error = %e, "[Normalize] Error waiting for ffmpeg");
+                return Err(FluffyError::Conversion(format!(
+                    "Error waiting for ffmpeg: {e}"
+                )));
+            }
+        }
     }
 
     Ok(())

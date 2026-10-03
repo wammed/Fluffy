@@ -1,6 +1,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::SystemTime,
 };
 
@@ -27,6 +31,7 @@ pub struct ConversionJob {
     pub state: JobState,
     pub started_at: SystemTime,
     pub error: Option<String>,
+    pub cancel_token: Arc<AtomicBool>,
     /// Associated client requests waiting for this job to complete.
     /// Each subscriber tracks its own target output, request generation, and IPC client ID.
     pub subscribers: Vec<JobSubscriber>,
@@ -158,6 +163,7 @@ impl JobManager {
             state: JobState::Queued,
             started_at: SystemTime::now(),
             error: None,
+            cancel_token: Arc::new(AtomicBool::new(false)),
             subscribers: vec![subscriber],
         };
 
@@ -179,6 +185,10 @@ impl JobManager {
         self.jobs.get_mut(&id)
     }
 
+    pub fn cancel_token(&self, id: JobId) -> Option<Arc<AtomicBool>> {
+        self.jobs.get(&id).map(|j| j.cancel_token.clone())
+    }
+
     pub fn set_state(&mut self, id: JobId, state: JobState) {
         if let Some(job) = self.jobs.get_mut(&id) {
             job.state = state;
@@ -198,6 +208,56 @@ impl JobManager {
             job.error = Some(error);
         }
         self.prune_finished_jobs(50);
+    }
+
+    pub fn cancel_job(&mut self, id: JobId) {
+        if let Some(job) = self.jobs.get_mut(&id) {
+            job.cancel_token.store(true, Ordering::SeqCst);
+            job.state = JobState::Cancelled;
+        }
+        self.prune_finished_jobs(50);
+    }
+
+    /// Cancels in-flight jobs targeting the given output whose generation is superseded by `new_generation`.
+    /// Immediately signals the cancellation token so any executing ffmpeg processes terminate.
+    pub fn cancel_superseded_jobs(
+        &mut self,
+        target_output: Option<&str>,
+        new_generation: u64,
+    ) -> Vec<JobId> {
+        let mut superseded_ids = Vec::new();
+
+        for job in self.jobs.values() {
+            if !job.is_in_flight() {
+                continue;
+            }
+
+            let matches_output = match target_output {
+                None => true, // global switch supersedes all older in-flight jobs
+                Some(tgt) => {
+                    // Output-specific switch: check if this job only targets the same output
+                    job.subscribers
+                        .iter()
+                        .all(|s| s.target_output.as_deref() == Some(tgt))
+                }
+            };
+
+            if matches_output && job.latest_generation() < new_generation {
+                superseded_ids.push(job.id);
+            }
+        }
+
+        for &id in &superseded_ids {
+            tracing::info!(
+                operation = "job_cancel_superseded",
+                job_id = id,
+                new_generation,
+                "[JobManager] Superseded in-flight conversion job cancelled"
+            );
+            self.cancel_job(id);
+        }
+
+        superseded_ids
     }
 
     pub fn mark_stale(&mut self, id: JobId) {
@@ -571,5 +631,54 @@ mod tests {
         for i in 1..=5 {
             assert!(outputs.contains(&Some(format!("DP-{i}"))));
         }
+    }
+
+    #[test]
+    fn test_job_manager_cancel_superseded_jobs() {
+        let mut mgr = JobManager::new();
+
+        // 1. Register job #1 for DP-1 with generation 10
+        let (id1, is_new1) = mgr.register_job(
+            Path::new("video1.mp4"),
+            Some("hash1"),
+            10,
+            Some("DP-1".to_string()),
+            1001,
+            Some(ClientId(1)),
+        );
+        assert!(is_new1);
+        let cancel_token1 = mgr.cancel_token(id1).unwrap();
+        assert!(!cancel_token1.load(std::sync::atomic::Ordering::SeqCst));
+
+        // 2. Register job #2 for DP-2 with generation 10
+        let (id2, is_new2) = mgr.register_job(
+            Path::new("video2.mp4"),
+            Some("hash2"),
+            10,
+            Some("DP-2".to_string()),
+            1002,
+            Some(ClientId(2)),
+        );
+        assert!(is_new2);
+        let cancel_token2 = mgr.cancel_token(id2).unwrap();
+        assert!(!cancel_token2.load(std::sync::atomic::Ordering::SeqCst));
+
+        // 3. User immediately requests new video on DP-1 with generation 11
+        // Calling cancel_superseded_jobs for DP-1 with gen 11 must cancel job #1, but keep job #2 running
+        let cancelled = mgr.cancel_superseded_jobs(Some("DP-1"), 11);
+        assert_eq!(cancelled, vec![id1]);
+        assert!(cancel_token1.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!cancel_token2.load(std::sync::atomic::Ordering::SeqCst));
+
+        let job1 = mgr.get_job(id1).unwrap();
+        assert_eq!(job1.state, JobState::Cancelled);
+
+        let job2 = mgr.get_job(id2).unwrap();
+        assert_eq!(job2.state, JobState::Queued);
+
+        // 4. Global request with generation 12 supersedes all remaining in-flight jobs
+        let cancelled_global = mgr.cancel_superseded_jobs(None, 12);
+        assert_eq!(cancelled_global, vec![id2]);
+        assert!(cancel_token2.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

@@ -534,6 +534,10 @@ impl WallpaperDaemon {
                 // Canonicalize path for stable in-flight job deduplication without blocking on full-file SHA-256
                 let canonical_source = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
+                // Optimization 3-2: Cancel any existing in-flight jobs targeting this output that have become stale
+                self.job_manager
+                    .cancel_superseded_jobs(req.output.as_deref(), generation);
+
                 // Register with JobManager (in-flight deduplication attaches subscriber without spawning duplicate worker)
                 let (job_id, is_new) = self.job_manager.register_job(
                     &canonical_source,
@@ -558,13 +562,17 @@ impl WallpaperDaemon {
                     let path_buf = canonical_source;
                     let storage_dir = self.cache.root_dir().to_path_buf();
                     let tx = self.transcode_tx.clone();
+                    let cancel_token = self.job_manager.cancel_token(job_id);
 
                     // Run video probe, content hashing, and transcoding on a background worker thread
-                    // to completely avoid blocking the daemon main loop and Wayland event dispatch.
+                    // with cancellation token to avoid blocking main loop and cleanly cancel when superseded.
                     thread::spawn(move || {
                         let manager = CacheManager::new(&storage_dir);
                         let result = match manager {
-                            Ok(mgr) => mgr.import_video(&path_buf),
+                            Ok(mgr) => mgr.import_video_with_cancel(
+                                &path_buf,
+                                cancel_token.as_ref().map(|a| a.as_ref()),
+                            ),
                             Err(e) => Err(e),
                         };
 
@@ -674,6 +682,23 @@ impl WallpaperDaemon {
                             .fail_job(job.id, "All outputs failed to apply wallpaper".to_string());
                     }
                 }
+                Err(FluffyError::JobCancelled) => {
+                    self.job_manager.cancel_job(job.id);
+                    tracing::info!(
+                        operation = "job_transcode_cancelled",
+                        job_id = job.id,
+                        "[Daemon] Background video normalization cancelled (superseded by newer request)"
+                    );
+                    for sub in &job.subscribers {
+                        if let Some(client_id) = sub.client_id {
+                            let resp = ResponseEnvelope::failure(
+                                sub.request_id,
+                                "Video change cancelled: superseded by a newer request",
+                            );
+                            self.send_ipc_response(client_id, &resp);
+                        }
+                    }
+                }
                 Err(e) => {
                     self.job_manager.fail_job(job.id, e.to_string());
                     tracing::error!(
@@ -713,14 +738,56 @@ impl WallpaperDaemon {
         Ok(())
     }
 
+    /// Sets an initial video on startup cleanly without going through IPC envelopes.
+    pub fn set_initial_video(&mut self, path: &Path) -> Result<()> {
+        let generation = self.outputs.allocate_generation(None, None)?;
+        let cached_path = self.cache.import_video(path)?;
+        self.apply_video_and_save_state(None, &cached_path, Some(generation))?;
+        Ok(())
+    }
+
+    /// Handles window fullscreen status changes to pause/resume wallpaper playback if configured.
+    pub fn handle_fullscreen_changed(&mut self, is_fullscreen: bool) -> Result<()> {
+        let config = crate::config::FluffyConfig::load();
+        if !config.startup_and_wallpaper.pause_on_fullscreen {
+            return Ok(());
+        }
+
+        if is_fullscreen {
+            tracing::info!(
+                "[Daemon] Fullscreen window detected: pausing wallpaper playback to save GPU/CPU"
+            );
+            self.outputs.pause(None)?;
+        } else {
+            tracing::info!("[Daemon] Fullscreen window cleared: resuming wallpaper playback");
+            self.outputs.resume(None)?;
+        }
+        Ok(())
+    }
+
     /// Runs the daemon main loop until a shutdown signal is received.
+    /// Uses adaptive sleep to significantly reduce idle CPU wakeups on battery while maintaining responsive playback.
     pub fn run(&mut self) -> Result<()> {
         tracing::info!("[Daemon] Daemon main loop started. Ready for IPC commands.");
 
         while !self.exit_flag.load(Ordering::SeqCst) {
             self.step()?;
-            // Sleep briefly to prevent busy-waiting when idle
-            thread::sleep(Duration::from_millis(5));
+
+            // Adaptive sleep:
+            // - Active transcoding: 5ms for rapid pipe communication
+            // - Playing video: 16ms (~60Hz frame alignment)
+            // - Idle/Paused/No video: 50ms (greatly saves laptop battery / CPU C-state)
+            let is_converting = self.job_manager.is_converting();
+            let has_active_video = self.outputs.default_active_video().is_some();
+            let sleep_dur = if is_converting {
+                Duration::from_millis(5)
+            } else if has_active_video {
+                Duration::from_millis(16)
+            } else {
+                Duration::from_millis(50)
+            };
+
+            thread::sleep(sleep_dur);
         }
 
         let sid = crate::benchmark::session_id();

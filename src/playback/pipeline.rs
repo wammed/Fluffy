@@ -42,10 +42,13 @@ impl PipelineHandle {
             .map_err(|e| FluffyError::Playback(format!("Failed to build URI from path: {e}")))?;
 
         // 1. Create Wayland display handle context
-        let gst_wl_context: gstreamer::Context = unsafe {
-            let raw = gst_wl_display_handle_context_new(raw_display_ptr);
-            FromGlibPtrFull::from_glib_full(raw)
-        };
+        let raw = unsafe { gst_wl_display_handle_context_new(raw_display_ptr) };
+        if raw.is_null() {
+            return Err(FluffyError::Playback(
+                "gst_wl_display_handle_context_new returned NULL pointer".to_string(),
+            ));
+        }
+        let gst_wl_context: gstreamer::Context = unsafe { FromGlibPtrFull::from_glib_full(raw) };
 
         // 2. Create dedicated waylandsink and apply context immediately
         let sink = gstreamer::ElementFactory::make("waylandsink")

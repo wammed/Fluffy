@@ -8,7 +8,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::normalize::{DEFAULT_FPS, normalize_even_dimensions, transcode_video};
+use super::normalize::{DEFAULT_FPS, normalize_even_dimensions, transcode_video_with_cancel};
+
 use super::probe::probe_video;
 use crate::error::{FluffyError, Result};
 
@@ -181,6 +182,32 @@ impl CacheManager {
     /// 7. Writes metadata/<hash>.json.
     /// 8. Returns the final path of the stored MP4.
     pub fn import_video<P: AsRef<Path>>(&self, source_path: P) -> Result<PathBuf> {
+        self.import_video_with_cancel(source_path, None)
+    }
+
+    /// Imports a video file into persistent storage with optional cancellation support:
+    /// 1. Probes and validates video dimensions (4K boundary check).
+    /// 2. Computes the source content hash.
+    /// 3. Checks if an existing valid storage object exists; if so, reuses it immediately.
+    /// 4. If video is already a compatible profile (H.264, yuv420p, <=30fps, even dims, <=4K):
+    ///    attempts instant zero-copy hardlink first, falling back to copy.
+    /// 5. Otherwise, transcodes via ffmpeg to normalized standard profile with cancellation support.
+    /// 6. Atomically moves temporary file to videos/<hash>.mp4.
+    /// 7. Writes metadata/<hash>.json.
+    /// 8. Returns the final path of the stored MP4.
+    pub fn import_video_with_cancel<P: AsRef<Path>>(
+        &self,
+        source_path: P,
+        cancel_token: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<PathBuf> {
+        use std::sync::atomic::Ordering;
+
+        if let Some(token) = cancel_token
+            && token.load(Ordering::Relaxed)
+        {
+            return Err(FluffyError::JobCancelled);
+        }
+
         let source_path = source_path.as_ref();
         let canonical_source = source_path.canonicalize().map_err(|e| {
             FluffyError::Cache(format!("Cannot resolve path {:?}: {e}", source_path))
@@ -188,6 +215,12 @@ impl CacheManager {
 
         // 1. Probe & Validate (will reject > 4K before transcoding)
         let probe_info = probe_video(&canonical_source)?;
+
+        if let Some(token) = cancel_token
+            && token.load(Ordering::Relaxed)
+        {
+            return Err(FluffyError::JobCancelled);
+        }
 
         // Gather file metadata
         let source_meta = fs::metadata(&canonical_source)?;
@@ -201,6 +234,13 @@ impl CacheManager {
 
         // 2. Compute source hash
         let hash = Self::compute_source_hash(&canonical_source)?;
+
+        if let Some(token) = cancel_token
+            && token.load(Ordering::Relaxed)
+        {
+            return Err(FluffyError::JobCancelled);
+        }
+
         let video_filename = format!("{hash}.mp4");
         let metadata_filename = format!("{hash}.json");
 
@@ -275,12 +315,25 @@ impl CacheManager {
                 width = probe_info.width,
                 height = probe_info.height,
                 fps = probe_info.fps,
-                "[Storage] Video is already compatible profile; bypassing transcode, copying directly to storage"
+                "[Storage] Video is already compatible profile; attempting hardlink, falling back to copy"
             );
-            fs::copy(&canonical_source, &tmp_video_path).map_err(|e| {
-                cleanup_tmp(&tmp_video_path);
-                FluffyError::Cache(format!("Failed to copy compatible video to storage: {e}"))
-            })?;
+            // Optimization 3-1: Try instant zero-copy hardlink first if on the same filesystem
+            if let Err(hardlink_err) = fs::hard_link(&canonical_source, &tmp_video_path) {
+                tracing::debug!(
+                    operation = "hardlink_fallback",
+                    error = %hardlink_err,
+                    "[Storage] Hardlink unavailable; falling back to full file copy"
+                );
+                fs::copy(&canonical_source, &tmp_video_path).map_err(|e| {
+                    cleanup_tmp(&tmp_video_path);
+                    FluffyError::Cache(format!("Failed to copy compatible video to storage: {e}"))
+                })?;
+            } else {
+                tracing::info!(
+                    operation = "cache_import_hardlink",
+                    "[Storage] Created instant zero-copy hardlink in storage"
+                );
+            }
             false
         } else {
             tracing::info!(
@@ -292,7 +345,13 @@ impl CacheManager {
                 fps = probe_info.fps,
                 "[Storage] Video requires normalization; transcoding to temporary storage file"
             );
-            if let Err(e) = transcode_video(&canonical_source, &tmp_video_path, &probe_info) {
+            // Optimization 3-2: Support cancellation during ffmpeg transcoding
+            if let Err(e) = transcode_video_with_cancel(
+                &canonical_source,
+                &tmp_video_path,
+                &probe_info,
+                cancel_token,
+            ) {
                 cleanup_tmp(&tmp_video_path);
                 return Err(e);
             }

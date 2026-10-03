@@ -1,70 +1,48 @@
-use std::{env, path::PathBuf};
+use std::path::PathBuf;
 
+use clap::{Parser, Subcommand};
 use fluffy::{
-    error::{FluffyError, Result},
+    error::Result,
     ipc::{IpcClient, default_socket_path},
 };
 
-fn print_help() {
-    println!(
-        r#"Fluffy Benchmark Utility
+#[derive(Parser, Debug)]
+#[command(
+    name = "fluffy-bench",
+    author,
+    version,
+    about = "Fluffy Benchmark Utility",
+    long_about = None
+)]
+pub struct BenchCli {
+    /// Target daemon Unix socket path
+    #[arg(long, global = true)]
+    pub socket: Option<PathBuf>,
 
-USAGE:
-    fluffy-bench [COMMAND] [OPTIONS]
+    #[command(subcommand)]
+    pub command: BenchCommands,
+}
 
-COMMANDS:
-    mark <LABEL>         Record a benchmark workload marker event in Fluffy's event log
-    help, --help         Print this help message
-
-OPTIONS:
-    --socket <PATH>      Target daemon Unix socket path
-"#
-    );
+#[derive(Subcommand, Debug)]
+pub enum BenchCommands {
+    /// Record a benchmark workload marker event in Fluffy's event log
+    Mark {
+        /// Label for benchmark marker
+        label: String,
+    },
 }
 
 fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    let raw_args = &args[1..];
+    let cli = BenchCli::parse();
+    let socket = cli.socket.unwrap_or_else(default_socket_path);
 
-    if raw_args.is_empty()
-        || raw_args[0] == "help"
-        || raw_args[0] == "--help"
-        || raw_args[0] == "-h"
-    {
-        print_help();
-        return Ok(());
+    match cli.command {
+        BenchCommands::Mark { label } => {
+            let client = IpcClient::new(&socket);
+            client.mark(&label)?;
+            println!("[Benchmark] Mark recorded: {}", label);
+        }
     }
 
-    let mut socket = default_socket_path();
-    let mut label = None;
-    let mut i = 0;
-
-    while i < raw_args.len() {
-        if raw_args[i] == "--socket" && i + 1 < raw_args.len() {
-            socket = PathBuf::from(&raw_args[i + 1]);
-            i += 2;
-            continue;
-        }
-        if raw_args[i] == "mark" {
-            if i + 1 < raw_args.len() && !raw_args[i + 1].starts_with("--") {
-                label = Some(raw_args[i + 1].clone());
-                i += 2;
-                continue;
-            }
-        } else if !raw_args[i].starts_with("--") && label.is_none() {
-            label = Some(raw_args[i].clone());
-        }
-        i += 1;
-    }
-
-    let label = label.ok_or_else(|| {
-        FluffyError::Ipc(
-            "Missing label for benchmark marker. Usage: fluffy-bench mark <LABEL>".to_string(),
-        )
-    })?;
-
-    let client = IpcClient::new(&socket);
-    client.mark(&label)?;
-    println!("[Benchmark] Mark recorded: {}", label);
     Ok(())
 }

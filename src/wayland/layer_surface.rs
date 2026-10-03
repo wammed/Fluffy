@@ -72,9 +72,6 @@ impl WallpaperSurface {
         layer_surface.set_exclusive_zone(-1);
         layer_surface.commit();
 
-        let pool = SlotPool::new(3840 * 2160 * 4, &ctx.state.shm)
-            .map_err(|e| FluffyError::Wayland(format!("Failed to create SHM slot pool: {e}")))?;
-
         let (width, height) = target_output
             .and_then(|o| ctx.state.output_state.info(o))
             .and_then(|info| {
@@ -88,6 +85,11 @@ impl WallpaperSurface {
                     })
             })
             .unwrap_or((2560, 1440));
+
+        let needed_bytes = (width as usize) * (height as usize) * 4;
+        let pool_capacity = needed_bytes.max(3840 * 2160 * 4);
+        let pool = SlotPool::new(pool_capacity, &ctx.state.shm)
+            .map_err(|e| FluffyError::Wayland(format!("Failed to create SHM slot pool: {e}")))?;
 
         let mut instance = Self {
             layer_surface: Some(layer_surface),
@@ -196,6 +198,12 @@ impl WallpaperSurface {
 
         self.width = new_width;
         self.height = new_height;
+
+        let needed_bytes = (new_width as usize) * (new_height as usize) * 4;
+        let pool_capacity = needed_bytes.max(3840 * 2160 * 4);
+        // Ensure pool can hold the buffer
+        self.pool = SlotPool::new(pool_capacity, &ctx.state.shm)
+            .map_err(|e| FluffyError::Wayland(format!("Failed to re-create SHM slot pool: {e}")))?;
 
         self.attach_initial_base_buffer()?;
         if let Err(e) = ctx.conn.flush() {
