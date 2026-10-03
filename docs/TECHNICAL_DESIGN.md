@@ -1175,3 +1175,34 @@ Include structured fields in tracing macros where available:
 ### 26.4 GUI Resilience
 * The GUI client (`fluffy-settings`) must never panic (`.unwrap()`) on daemon connection or IPC failures.
 * Failures must be classified into structured categories (`connection unavailable`, `timeout`, `daemon stopped`, `invalid response`) and gracefully presented to the user.
+
+------------------------------------------------------------------------
+
+## 27. Architecture Optimizations & Fullscreen Detection (Phase 8 Hardening)
+
+### 27.1 Auto-Pause on Fullscreen Windows (Dual Wayland Protocol)
+To preserve GPU and CPU resources during gaming or media consumption, Fluffy monitors Wayland toplevel states and automatically pauses/resumes video playback pipelines.
+* **COSMIC Desktop Native**: Binds `zcosmic_toplevel_info_v1` (`cosmic-protocols`), tracking toplevel `state` events (`Fullscreen = 3`).
+* **wlroots / Sway / Hyprland**: Falls back to `zwlr_foreign_toplevel_manager_v1` (`wayland-protocols-wlr`) to track equivalent fullscreen window states.
+* **Startup Capability Detection**: Probes compositor advertised globals during Wayland initialization to establish `supports_fullscreen_detection`, reporting this via IPC `DaemonStatus`.
+* **GUI Integration**: `fluffy-settings` displays a real-time status label (`🟢 コンポジター対応` / `⚠️ コンポジター非対応`) and disables the toggle switch if the compositor lacks support.
+
+### 27.2 Dynamic Adaptive Loop Sleep
+Replaces a static 5ms busy-wait sleep with an adaptive polling interval matching the daemon's operational phase:
+* Background transcoding active: **5 ms** (responsive process polling).
+* Normal video playback: **16 ms** (~60fps event loop rate).
+* Complete idle: **50 ms** (reduces CPU usage below 0.1%).
+
+### 27.3 Atomic Cancellation of Superseded Transcoding Jobs
+When rapid consecutive wallpaper changes are issued, prior in-flight ffmpeg transcoding processes for the same output are superseded:
+* Managed by `JobManager::cancel_superseded_jobs`.
+* Uses `Arc<AtomicBool>` cancellation tokens with immediate `child.kill()` execution, terminating orphaned ffmpeg subprocesses and cleaning temporary files immediately.
+
+### 27.4 Hardlink Fast-Path for Compliant Videos
+When importing videos that already comply with standard specifications (H.264 / <=30fps / yuv420p / even dimensions), Fluffy attempts `fs::hard_link` within the same filesystem. This eliminates disk I/O and duplicate storage space, with automatic fallback to `copy` across filesystems.
+
+### 27.5 Memory Safety and Hardening
+* **NULL Verification**: Added explicit NULL checks for `gst_wl_display_handle_context_new` to prevent segmentation faults during initialization failures.
+* **Dynamic Buffer Allocation**: In `SlotPool`, dynamic buffer capacity calculation now scales with geometry changes, completely avoiding buffer overflow crashes on display hotplug or resolution adjustments.
+* **Safe POSIX FFI**: Replaced unsafe `libc::getuid` calls with safe `rustix::process::getuid()`.
+* **Declarative CLI**: Migrated manual string-splitting argument parsing to type-safe declarative `clap` derive structures.

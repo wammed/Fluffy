@@ -75,7 +75,7 @@ Fluffy は Rust の依存関係管理に Cargo を使用しています。
 - Unicode-3.0
 - Zlib
 
-未知のレジストリおよび未知の Git ソースは、現在の `deny.toml` 設定により拒否されます。
+未知のレジストリおよび未知の Git ソースは、現在の `deny.toml` 設定により拒否されます（COSMIC デスクトップ公式の `cosmic-protocols` Git ソースのみ `allow-git` にて明示的に許可）。
 
 ### 重複クレートバージョン
 

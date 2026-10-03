@@ -37,7 +37,9 @@
   - **Resident Daemon (`fluffy`)**: Micro-footprint of only **3.2 MB** binary size and **40 MB RSS** RAM at idle.
   - **Settings GUI (`fluffy-settings`)**: Ephemeral client built with `libcosmic` that connects over Unix domain socket IPC and exits immediately when done, leaving the daemon completely unbloated.
 - **Deterministic 4K Normalization & Atomic Storage**: Validates arbitrary video files via `ffprobe` (strictly enforcing container format and 4K boundaries) and transcodes to standard H.264/30fps profiles with SHA-256 content addressing in `~/.local/share/fluffy/storage/`.
-- **Dynamic Display Hotplug & Geometry Tracking**: Automatically detects monitor connections, disconnections, and resolution/scale changes in real-time, assigning wallpapers without daemon restarts.
+- **Dynamic Display Hotplug & Geometry Tracking**: Automatically detects monitor connections, disconnections, and resolution/scale changes in real-time without daemon restarts, with dynamic shared memory buffer pool recalculation to prevent crashes.
+- **Auto-Pause on Fullscreen (Dual Wayland Protocol)**: Automatically pauses playback during fullscreen gaming or media playback to preserve CPU/GPU resources. Dual support for COSMIC native (`zcosmic_toplevel_info_v1`) and wlroots (`zwlr_foreign_toplevel_manager_v1`), with real-time compositor compatibility reporting in the settings GUI.
+- **Adaptive Sleep & In-Flight Job Cancellation**: Dynamically throttles main event loop polling based on state (5ms transcoding / 16ms playback / 50ms idle), atomically kills superseded ffmpeg transcoding subprocesses on rapid switching, and uses hardlink fast-paths for compatible videos.
 - **systemd `--user` Integration**: Fully integrated into `graphical-session.target` with absolute binary pathing (`%h/.local/bin/fluffy`) and automated crash recovery (`Restart=on-failure`).
 
 ---
@@ -190,7 +192,7 @@ Fluffy conforms strictly to the XDG Base Directory specification:
 - **Configuration File**: `$XDG_CONFIG_HOME/fluffy/config.json` (default: `~/.config/fluffy/config.json`)
   - `restore_on_startup`: Automatically restores saved wallpapers on daemon launch / user login (default: `false`, stateless mode).
   - `autostart_daemon`: Tracks login autostart state with systemd user service.
-  - `pause_on_fullscreen`: Pauses playback when an application window is in fullscreen.
+  - `pause_on_fullscreen`: Pauses playback when an application window is in fullscreen. The settings GUI (`fluffy-settings`) automatically checks and displays compositor compatibility (`🟢 コンポジター対応` / `⚠️ コンポジター非対応`) in real time.
 - **State File**: `$XDG_STATE_HOME/fluffy/state.json` (default: `~/.local/state/fluffy/state.json`)
   - Records the last applied normalized video path per display output for zero-delay startup restoration.
 

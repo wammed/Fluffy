@@ -4,8 +4,8 @@
   <a href="SESSION_HANDOVER.md">English</a> | <a href="SESSION_HANDOVER.ja.md">日本語</a> | <a href="PORTAL.md">📚 Portal</a>
 </p>
 
-**Status:** Phase 7 (Hardening, systemd & Benchmarks) COMPLETED (Real-hardware-tested) --- All Core Phases COMPLETE.\
-**Last updated:** 2026-09-27\
+**Status:** Phase 8 (Refactoring, Optimizations & Fullscreen Auto-Pause) COMPLETED (Real-hardware-tested) --- All Core Phases COMPLETE.\
+**Last updated:** 2026-10-04\
 **Current phase summary:**
 - **Phase 1: Wayland / GStreamer PoC** --- **COMPLETE** (Real-hardware-tested)
 - **Phase 2: Playback Core** --- **COMPLETE** (Real-hardware-tested)
@@ -14,6 +14,7 @@
 - **Phase 5: Multi-output Management** --- **COMPLETE** (Real-hardware-tested)
 - **Phase 6: Settings GUI (libcosmic)** --- **COMPLETE** (Real-hardware-tested)
 - **Phase 7: Hardening, systemd & Benchmarks** --- **COMPLETE** (Real-hardware-tested)
+- **Phase 8: Optimizations, Safety & Fullscreen Auto-Pause** --- **COMPLETE** (Real-hardware-tested)
 
 ------------------------------------------------------------------------
 
@@ -383,6 +384,20 @@ Fluffy/
 - [x] Robust CLI argument parser supporting options anywhere (Unit-tested & Real-hardware-tested)
 - [x] Systematic performance benchmarks (Idle, 1080p, 1440p, 4K across dual displays) (Real-hardware-tested)
 - [x] Automated integration installer (`scripts/install-desktop-integration.sh`) (Tested)
+
+### Optimizations, Refactoring & Fullscreen Auto-Pause (Phase 8 COMPLETE)
+- [x] Auto-pause and resume playback upon fullscreen window detection (`pause_on_fullscreen`) (Real-hardware-tested)
+- [x] COSMIC Desktop native protocol (`zcosmic_toplevel_info_v1`) auto-detection and binding (Real-hardware-tested)
+- [x] wlroots common protocol (`zwlr_foreign_toplevel_manager_v1`) auto-detection and fallback (Tested)
+- [x] Real-time compositor support status indicator in settings GUI (`🟢 コンポジター対応` / `⚠️ コンポジター非対応`) (Real-hardware-tested)
+- [x] Graceful disabled toggler state on unsupported compositors (Real-hardware-tested)
+- [x] Adaptive event loop sleep intervals (5ms transcoding / 16ms playback / 50ms idle) (Unit-tested & Real-hardware-tested)
+- [x] Atomic cancellation of superseded in-flight transcode jobs (`cancel_token` + `child.kill()`) (Unit-tested & Real-hardware-tested)
+- [x] Hardlink fast-path for compatible video cache imports (Unit-tested)
+- [x] `SlotPool` geometry-aware dynamic buffer capacity scaling avoiding overflow crashes (Real-hardware-tested)
+- [x] NULL-pointer safety validation for GStreamer Wayland display handle (Unit-tested)
+- [x] Replaced unsafe `libc` FFI with safe Rust `rustix` (Unit-tested)
+- [x] Declarative CLI argument parser via `clap` derive (Unit-tested & Real-hardware-tested)
 
 ### Surface Scaling & Wayland Protocols (Status)
 - [x] Surface scaling via 4-edge anchors & waylandsink render rectangle (Real-hardware-tested)

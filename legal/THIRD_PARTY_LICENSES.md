@@ -80,7 +80,7 @@ The configured allowed licenses are:
 - Zlib
 
 Unknown registries and unknown Git sources are denied by the current `deny.toml`
-configuration.
+configuration (with the official COSMIC `cosmic-protocols` repository explicitly permitted in `allow-git`).
 
 ### Duplicate crate versions
 
