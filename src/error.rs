@@ -29,6 +29,9 @@ pub enum FluffyError {
     #[error("Output '{0}' not found")]
     OutputNotFound(String),
 
+    #[error("Stale request generation: {requested} < current {current}")]
+    StaleGeneration { current: u64, requested: u64 },
+
     #[error("IPC error: {0}")]
     Ipc(String),
 

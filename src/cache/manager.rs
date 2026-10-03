@@ -41,6 +41,16 @@ pub struct CacheManager {
 
 pub type StorageManager = CacheManager;
 
+fn is_file_older_than(path: &Path, duration: std::time::Duration) -> bool {
+    if let Ok(metadata) = fs::metadata(path)
+        && let Ok(modified) = metadata.modified()
+        && let Ok(elapsed) = modified.elapsed()
+    {
+        return elapsed >= duration;
+    }
+    false
+}
+
 impl CacheManager {
     pub fn new<P: AsRef<Path>>(root_dir: P) -> Result<Self> {
         let root = root_dir.as_ref().to_path_buf();
@@ -50,30 +60,50 @@ impl CacheManager {
         fs::create_dir_all(&videos_dir)?;
         fs::create_dir_all(&metadata_dir)?;
 
-        let manager = Self {
+        Ok(Self {
             root_dir: root,
             videos_dir,
             metadata_dir,
-        };
-
-        // Automatically clean up orphaned temporary files from previous crashed sessions
-        if let Err(e) = manager.cleanup_stale_temp_files() {
-            tracing::debug!(error = %e, "[Storage] cleanup_stale_temp_files encountered an error on startup");
-        }
-
-        Ok(manager)
+        })
     }
 
     /// Cleans up orphaned temporary files (`.tmp.*`) created by previous crashed
-    /// or interrupted normalization tasks.
+    /// or interrupted normalization tasks. Avoids removing files owned by active
+    /// processes or files created very recently.
     pub fn cleanup_stale_temp_files(&self) -> Result<usize> {
         let mut cleaned = 0;
+        let current_pid = std::process::id();
+
         for dir in &[&self.videos_dir, &self.metadata_dir] {
             if let Ok(entries) = fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let name = entry.file_name();
                     let name_str = name.to_string_lossy();
-                    if name_str.starts_with(".tmp.") && fs::remove_file(entry.path()).is_ok() {
+                    if !name_str.starts_with(".tmp.") {
+                        continue;
+                    }
+
+                    // Filename pattern: .tmp.{pid}.{now}.{hash}.{ext}
+                    let parts: Vec<&str> = name_str.split('.').collect();
+                    let should_remove = if parts.len() >= 3 {
+                        if let Ok(file_pid) = parts[2].parse::<u32>() {
+                            if file_pid == current_pid {
+                                // Never delete temp files created by the current process
+                                false
+                            } else {
+                                // If the process that created this file is no longer alive, it's stale
+                                !Path::new(&format!("/proc/{file_pid}")).exists()
+                            }
+                        } else {
+                            // If PID not parsable, check file age (older than 10 minutes)
+                            is_file_older_than(&entry.path(), std::time::Duration::from_secs(600))
+                        }
+                    } else {
+                        // Fallback: check file age
+                        is_file_older_than(&entry.path(), std::time::Duration::from_secs(600))
+                    };
+
+                    if should_remove && fs::remove_file(entry.path()).is_ok() {
                         cleaned += 1;
                     }
                 }

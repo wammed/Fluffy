@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 use cosmic::app::{Core, Settings, Task};
 use cosmic::iced::widget::{Space, column, container, row, scrollable, text};
 use cosmic::iced::{Alignment, Length, Size};
-use cosmic::widget::{button, text_input};
+use cosmic::widget::{button, text_input, toggler};
 use cosmic::{Application, Element};
 
+use fluffy::config::FluffyConfig;
 use fluffy::ipc::{DaemonStatus, IpcClient, OutputStatus, default_socket_path};
 use std::time::Duration;
 
@@ -27,6 +28,9 @@ pub enum Message {
     Stop,
     PlaybackControlCompleted(Result<String, String>),
     DismissMessage,
+    ToggleRestoreOnStartup(bool),
+    ToggleAutostartDaemon(bool),
+    TogglePauseOnFullscreen(bool),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -202,6 +206,7 @@ struct FluffySettingsApp {
     converting_file: Option<String>,
     spinner_index: usize,
     is_fetching_status: bool,
+    config: FluffyConfig,
 }
 
 impl Application for FluffySettingsApp {
@@ -245,6 +250,7 @@ impl Application for FluffySettingsApp {
 
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
         let socket_path = default_socket_path();
+        let config = FluffyConfig::load();
         let mut app = Self {
             core,
             socket_path: socket_path.clone(),
@@ -259,6 +265,7 @@ impl Application for FluffySettingsApp {
             converting_file: None,
             spinner_index: 0,
             is_fetching_status: true,
+            config,
         };
 
         app.core
@@ -467,6 +474,45 @@ impl Application for FluffySettingsApp {
                 self.status_message = None;
                 Task::none()
             }
+
+            Message::ToggleRestoreOnStartup(val) => {
+                self.config.startup_and_wallpaper.restore_on_startup = val;
+                let _ = self.config.save();
+                self.status_message = Some((
+                    if val {
+                        "起動時・ログイン時の壁紙自動復元を有効にしました".to_string()
+                    } else {
+                        "起動時・ログイン時の壁紙自動復元を無効にしました（ステートレス）"
+                            .to_string()
+                    },
+                    false,
+                ));
+                Task::none()
+            }
+
+            Message::ToggleAutostartDaemon(val) => {
+                self.config.startup_and_wallpaper.autostart_daemon = val;
+                let _ = self.config.save();
+                let arg = if val { "enable" } else { "disable" };
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", arg, "fluffy.service"])
+                    .output();
+                self.status_message = Some((
+                    if val {
+                        "ログイン時のデーモン自動起動を有効にしました (systemd)".to_string()
+                    } else {
+                        "ログイン時のデーモン自動起動を無効にしました (systemd)".to_string()
+                    },
+                    false,
+                ));
+                Task::none()
+            }
+
+            Message::TogglePauseOnFullscreen(val) => {
+                self.config.startup_and_wallpaper.pause_on_fullscreen = val;
+                let _ = self.config.save();
+                Task::none()
+            }
         }
     }
 
@@ -634,6 +680,58 @@ impl Application for FluffySettingsApp {
         .spacing(8);
 
         content = content.push(controls);
+
+        // Section: Startup & Wallpaper Behavior (条件２準拠)
+        content = content.push(text("Startup & Wallpaper Behavior:").size(16));
+
+        let restore_card = row![
+            column![
+                text("Restore Wallpaper on Startup / 起動・ログイン時の壁紙自動復元").size(14),
+                text("デーモン起動時やログイン時に、前回設定した壁紙動画を自動復元して再生します（デフォルト: 無効）。").size(12),
+            ]
+            .spacing(2)
+            .width(Length::Fill),
+            toggler(self.config.startup_and_wallpaper.restore_on_startup)
+                .on_toggle(Message::ToggleRestoreOnStartup)
+        ]
+        .align_y(Alignment::Center)
+        .spacing(12);
+
+        let autostart_card = row![
+            column![
+                text("Start Daemon on Login / ログイン時の自動起動 (systemd)").size(14),
+                text("ユーザーログイン時にバックグラウンドで壁紙デーモンを自動起動します。")
+                    .size(12),
+            ]
+            .spacing(2)
+            .width(Length::Fill),
+            toggler(self.config.startup_and_wallpaper.autostart_daemon)
+                .on_toggle(Message::ToggleAutostartDaemon)
+        ]
+        .align_y(Alignment::Center)
+        .spacing(12);
+
+        let fullscreen_card = row![
+            column![
+                text("Pause on Fullscreen / 全画面表示時の一時停止").size(14),
+                text("ウィンドウが全画面表示されている間、GPU・CPUリソースを節約するため動画再生を一時停止します。").size(12),
+            ]
+            .spacing(2)
+            .width(Length::Fill),
+            toggler(self.config.startup_and_wallpaper.pause_on_fullscreen)
+                .on_toggle(Message::TogglePauseOnFullscreen)
+        ]
+        .align_y(Alignment::Center)
+        .spacing(12);
+
+        let settings_box = column![
+            container(restore_card).padding(10).width(Length::Fill),
+            container(autostart_card).padding(10).width(Length::Fill),
+            container(fullscreen_card).padding(10).width(Length::Fill),
+        ]
+        .spacing(8);
+
+        content = content.push(settings_box);
 
         // Section: Video Specification Guide
         let guide = column![

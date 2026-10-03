@@ -58,16 +58,18 @@ impl GenerationTracker {
                     .get(target)
                     .filter(|&&c| explicit < c)
                 {
-                    return Err(FluffyError::Ipc(format!(
-                        "Stale request generation: {explicit} < current {curr} for output '{target}'"
-                    )));
+                    return Err(FluffyError::StaleGeneration {
+                        current: curr,
+                        requested: explicit,
+                    });
                 }
             } else {
-                for (name, &curr) in &self.applied_generations {
+                for &curr in self.applied_generations.values() {
                     if explicit < curr {
-                        return Err(FluffyError::Ipc(format!(
-                            "Stale request generation: {explicit} < current {curr} for output '{name}'"
-                        )));
+                        return Err(FluffyError::StaleGeneration {
+                            current: curr,
+                            requested: explicit,
+                        });
                     }
                 }
             }
@@ -106,27 +108,29 @@ impl GenerationTracker {
                     session_id = %sid,
                     "[GenerationTracker] Stale request rejected: job_gen < current_gen"
                 );
-                return Err(FluffyError::Ipc(format!(
-                    "Stale request generation: {job_generation} < current {curr} for output '{target}'"
-                )));
+                return Err(FluffyError::StaleGeneration {
+                    current: curr,
+                    requested: job_generation,
+                });
             }
             self.applied_generations
                 .insert(target.to_string(), job_generation);
         } else {
             // Validate all outputs atomically before making any state mutations
-            for (name, &curr) in &self.applied_generations {
+            for (_name, &curr) in &self.applied_generations {
                 if job_generation < curr {
                     tracing::warn!(
                         event = "stale_request_rejected",
-                        output = %name,
+                        output = %_name,
                         generation = job_generation,
                         current_generation = curr,
                         session_id = %sid,
                         "[GenerationTracker] Stale request rejected on output: job_gen < current_gen"
                     );
-                    return Err(FluffyError::Ipc(format!(
-                        "Stale request generation: {job_generation} < current {curr} on output '{name}'"
-                    )));
+                    return Err(FluffyError::StaleGeneration {
+                        current: curr,
+                        requested: job_generation,
+                    });
                 }
             }
             for curr in self.applied_generations.values_mut() {

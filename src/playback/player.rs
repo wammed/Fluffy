@@ -5,7 +5,7 @@ use gstreamer_video::prelude::*;
 
 use super::pipeline::PipelineHandle;
 use super::state::PlaybackState;
-use crate::error::Result;
+use crate::error::{FluffyError, Result};
 
 pub trait VideoPlayer {
     fn play(&mut self, video: &Path) -> Result<()>;
@@ -150,6 +150,29 @@ impl GstVideoPlayer {
                 pending = ?pending_st,
                 "[Player] Preroll completed"
             );
+
+            match state_change_res {
+                Ok(gstreamer::StateChangeSuccess::Success)
+                | Ok(gstreamer::StateChangeSuccess::NoPreroll) => {
+                    // Preroll successful
+                }
+                other => {
+                    let _ = new_handle.pipeline.set_state(gstreamer::State::Null);
+                    tracing::error!(
+                        operation = "preroll_failed",
+                        output = %output,
+                        generation = generation,
+                        result = ?other,
+                        current = ?current_st,
+                        pending = ?pending_st,
+                        "[Player] Preroll failed or timed out; preserving current playback"
+                    );
+                    return Err(FluffyError::Playback(format!(
+                        "Pipeline preroll failed for video {:?}: result={:?}, current={:?}, pending={:?}",
+                        video, other, current_st, pending_st
+                    )));
+                }
+            }
 
             tracing::info!(
                 event = "new_pipeline_displayable",
@@ -378,10 +401,7 @@ impl VideoPlayer for GstVideoPlayer {
             return Ok(true);
         };
 
-        while let Some(msg) = handle
-            .bus
-            .timed_pop(gstreamer::ClockTime::from_mseconds(50))
-        {
+        while let Some(msg) = handle.bus.pop() {
             use gstreamer::MessageView;
             match msg.view() {
                 MessageView::Eos(..) => {

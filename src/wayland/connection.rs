@@ -251,9 +251,27 @@ impl WaylandContext {
     }
 
     pub fn dispatch_pending(&mut self) -> Result<()> {
+        // 1. Try reading any new events from the Wayland socket without blocking
+        if let Some(guard) = self.conn.prepare_read()
+            && let Err(e) = guard.read()
+        {
+            let is_would_block = match &e {
+                wayland_client::backend::WaylandError::Io(io_err) => {
+                    io_err.kind() == std::io::ErrorKind::WouldBlock
+                }
+                _ => false,
+            };
+            if !is_would_block {
+                tracing::warn!(error = %e, "[Wayland] Error reading events from Wayland socket");
+            }
+        }
+
+        // 2. Dispatch pending events in the queue
         if let Err(e) = self.event_queue.dispatch_pending(&mut self.state) {
             tracing::warn!(error = %e, "[Wayland] Error dispatching pending events");
         }
+
+        // 3. Flush any pending requests to compositor
         if let Err(e) = self.conn.flush() {
             tracing::warn!(error = %e, "[Wayland] Error flushing connection during dispatch_pending");
         }

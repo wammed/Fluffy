@@ -1,10 +1,11 @@
 use std::{
     collections::HashMap,
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{Read, Write},
     os::unix::fs::PermissionsExt,
     os::unix::net::{UnixListener, UnixStream},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use super::protocol::{MAX_REQUEST_SIZE, RequestEnvelope, ResponseEnvelope};
@@ -18,10 +19,16 @@ pub struct PendingRequest {
     pub request: RequestEnvelope,
 }
 
+struct ConnectedClient {
+    stream: UnixStream,
+    buffer: Vec<u8>,
+    connected_at: Instant,
+}
+
 pub struct IpcServer {
     socket_path: PathBuf,
     listener: UnixListener,
-    clients: HashMap<ClientId, UnixStream>,
+    clients: HashMap<ClientId, ConnectedClient>,
     next_client_id: u64,
 }
 
@@ -90,7 +97,14 @@ impl IpcServer {
                     stream.set_nonblocking(true)?;
                     let id = ClientId(self.next_client_id);
                     self.next_client_id += 1;
-                    self.clients.insert(id, stream);
+                    self.clients.insert(
+                        id,
+                        ConnectedClient {
+                            stream,
+                            buffer: Vec::new(),
+                            connected_at: Instant::now(),
+                        },
+                    );
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     break;
@@ -103,62 +117,38 @@ impl IpcServer {
 
         let mut pending = Vec::new();
         let mut disconnected = Vec::new();
+        let idle_timeout = Duration::from_secs(60);
 
         // 2. Poll existing clients for data
-        for (&client_id, stream) in self.clients.iter_mut() {
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
+        for (&client_id, client) in self.clients.iter_mut() {
+            // Check idle connection timeout
+            if client.connected_at.elapsed() > idle_timeout && client.buffer.is_empty() {
+                tracing::debug!(
+                    client_id = client_id.0,
+                    "[IPC] Idle client connection timed out"
+                );
+                disconnected.push(client_id);
+                continue;
+            }
 
-            match reader.read_line(&mut line) {
+            let mut chunk = [0u8; 4096];
+            match client.stream.read(&mut chunk) {
                 Ok(0) => {
                     // EOF: client closed connection
                     disconnected.push(client_id);
+                    continue;
                 }
                 Ok(n) => {
-                    if n > MAX_REQUEST_SIZE {
-                        // Oversized request error
+                    client.buffer.extend_from_slice(&chunk[..n]);
+
+                    if client.buffer.len() > MAX_REQUEST_SIZE {
                         let resp = ResponseEnvelope::failure(
                             0,
                             format!("Request exceeded max size of {} bytes", MAX_REQUEST_SIZE),
                         );
-                        if let Err(e) = Self::send_response_to_stream(reader.get_mut(), &resp) {
-                            tracing::debug!(client_id = client_id.0, error = %e, "[IPC] Failed to send oversized request error to client");
-                        }
+                        let _ = Self::send_response_to_stream(&mut client.stream, &resp);
                         disconnected.push(client_id);
                         continue;
-                    }
-
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-
-                    match serde_json::from_str::<RequestEnvelope>(trimmed) {
-                        Ok(req) => {
-                            if let Err(err) = req.validate() {
-                                let resp =
-                                    ResponseEnvelope::failure(req.request_id, err.to_string());
-                                if let Err(e) =
-                                    Self::send_response_to_stream(reader.get_mut(), &resp)
-                                {
-                                    tracing::debug!(client_id = client_id.0, error = %e, "[IPC] Failed to send validation error to client");
-                                }
-                                disconnected.push(client_id);
-                            } else {
-                                pending.push(PendingRequest {
-                                    client_id,
-                                    request: req,
-                                });
-                            }
-                        }
-                        Err(e) => {
-                            let resp = ResponseEnvelope::failure(0, format!("Malformed JSON: {e}"));
-                            if let Err(err) = Self::send_response_to_stream(reader.get_mut(), &resp)
-                            {
-                                tracing::debug!(client_id = client_id.0, error = %err, "[IPC] Failed to send JSON parse error to client");
-                            }
-                            disconnected.push(client_id);
-                        }
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -166,6 +156,39 @@ impl IpcServer {
                 }
                 Err(_) => {
                     disconnected.push(client_id);
+                    continue;
+                }
+            }
+
+            // Check if buffer contains a complete newline-terminated line
+            while let Some(newline_pos) = client.buffer.iter().position(|&b| b == b'\n') {
+                let line_bytes: Vec<u8> = client.buffer.drain(..=newline_pos).collect();
+                let trimmed = String::from_utf8_lossy(&line_bytes);
+                let trimmed = trimmed.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                match serde_json::from_str::<RequestEnvelope>(trimmed) {
+                    Ok(req) => {
+                        if let Err(err) = req.validate() {
+                            let resp = ResponseEnvelope::failure(req.request_id, err.to_string());
+                            let _ = Self::send_response_to_stream(&mut client.stream, &resp);
+                            disconnected.push(client_id);
+                            break;
+                        } else {
+                            pending.push(PendingRequest {
+                                client_id,
+                                request: req,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        let resp = ResponseEnvelope::failure(0, format!("Malformed JSON: {e}"));
+                        let _ = Self::send_response_to_stream(&mut client.stream, &resp);
+                        disconnected.push(client_id);
+                        break;
+                    }
                 }
             }
         }
@@ -180,8 +203,8 @@ impl IpcServer {
 
     /// Sends a response to the specified client and closes the connection.
     pub fn respond(&mut self, client_id: ClientId, response: &ResponseEnvelope) -> Result<()> {
-        if let Some(mut stream) = self.clients.remove(&client_id) {
-            Self::send_response_to_stream(&mut stream, response)?;
+        if let Some(mut client) = self.clients.remove(&client_id) {
+            Self::send_response_to_stream(&mut client.stream, response)?;
         }
         Ok(())
     }

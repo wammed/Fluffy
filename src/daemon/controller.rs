@@ -63,6 +63,9 @@ impl WallpaperDaemon {
         );
 
         let cache = CacheManager::new(CacheManager::default_storage_dir())?;
+        if let Err(e) = cache.cleanup_stale_temp_files() {
+            tracing::debug!(error = %e, "[Storage] cleanup_stale_temp_files encountered an error on daemon startup");
+        }
         let mut wayland_ctx = WaylandContext::init()?;
 
         let outputs_info = wayland_ctx.outputs();
@@ -103,7 +106,7 @@ impl WallpaperDaemon {
         let ipc_server = IpcServer::bind(socket_path)?;
         let (transcode_tx, transcode_rx) = mpsc::channel();
 
-        Ok(Self {
+        let mut daemon = Self {
             wayland_ctx,
             outputs: output_manager,
             cache,
@@ -113,7 +116,62 @@ impl WallpaperDaemon {
             transcode_tx,
             transcode_rx,
             job_manager: JobManager::new(),
-        })
+        };
+
+        // Opt-in restoration: only restores if enabled in settings
+        let _ = daemon.restore_saved_state_if_enabled();
+
+        Ok(daemon)
+    }
+
+    /// Checks settings and restores previous wallpaper state only if opt-in is enabled.
+    pub fn restore_saved_state_if_enabled(&mut self) -> Result<()> {
+        let config = crate::config::FluffyConfig::load();
+        if !config.startup_and_wallpaper.restore_on_startup {
+            tracing::debug!(
+                "[Daemon] restore_on_startup is disabled in settings; starting in stateless mode"
+            );
+            return Ok(());
+        }
+
+        tracing::info!(
+            "[Daemon] restore_on_startup is enabled in settings; restoring saved wallpaper..."
+        );
+        let state = crate::config::DaemonState::load();
+        for (output_name, video_path_str) in &state.outputs {
+            let path = Path::new(video_path_str);
+            if !path.exists() {
+                tracing::warn!(output = %output_name, path = %video_path_str, "[Daemon] Saved wallpaper video file not found");
+                continue;
+            }
+
+            if self
+                .requested_output
+                .as_ref()
+                .is_none_or(|req| req == output_name)
+            {
+                if let Err(e) = self.outputs.set_video(Some(output_name), path, None) {
+                    tracing::warn!(output = %output_name, error = %e, "[Daemon] Failed to restore saved wallpaper for output");
+                } else {
+                    tracing::info!(output = %output_name, path = %video_path_str, "[Daemon] Successfully restored saved wallpaper for output");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn save_output_wallpaper_state(&self, target_output: Option<&str>, video_path: &Path) {
+        let mut state = crate::config::DaemonState::load();
+        if let Some(target) = target_output {
+            state.record_output_video(target, video_path);
+        } else {
+            for (out_name, _) in self.outputs.iter() {
+                state.record_output_video(out_name, video_path);
+            }
+        }
+        if let Err(e) = state.save() {
+            tracing::debug!(error = %e, "[Daemon] Failed to save wallpaper state");
+        }
     }
 
     /// Handles dynamic Wayland output addition, update, and removal (hotplug).
@@ -276,7 +334,10 @@ impl WallpaperDaemon {
                     &cached_path,
                     Some(generation),
                 ) {
-                    Ok(r) => r,
+                    Ok(r) => {
+                        self.save_output_wallpaper_state(req.output.as_deref(), &cached_path);
+                        r
+                    }
                     Err(e) => return ResponseEnvelope::failure(req.request_id, e.to_string()),
                 };
 
@@ -450,6 +511,7 @@ impl WallpaperDaemon {
                             .set_video(req.output.as_deref(), path, Some(generation))
                         {
                             Ok(apply_result) => {
+                                self.save_output_wallpaper_state(req.output.as_deref(), path);
                                 let data = serde_json::to_value(&apply_result).ok();
                                 let resp = ResponseEnvelope::success(req.request_id, data);
                                 self.send_ipc_response(client_id, &resp);
@@ -551,9 +613,34 @@ impl WallpaperDaemon {
                                     cached_path = ?cached_path,
                                     "[Daemon] Wallpaper applied successfully for subscriber"
                                 );
+                                self.save_output_wallpaper_state(
+                                    sub.target_output.as_deref(),
+                                    &cached_path,
+                                );
                                 if let Some(client_id) = sub.client_id {
                                     let data = serde_json::to_value(&set_video_result).ok();
                                     let resp = ResponseEnvelope::success(sub.request_id, data);
+                                    self.send_ipc_response(client_id, &resp);
+                                }
+                            }
+                            Err(FluffyError::StaleGeneration { current, requested }) => {
+                                let sid = crate::benchmark::session_id();
+                                let err_msg = format!(
+                                    "Stale request generation: {requested} < current {current}"
+                                );
+                                tracing::warn!(
+                                    event = "stale_request_rejected",
+                                    operation = "job_subscriber_stale",
+                                    job_id = job.id,
+                                    request_id = sub.request_id,
+                                    generation = sub.generation,
+                                    output = ?sub.target_output,
+                                    session_id = %sid,
+                                    reason = %err_msg,
+                                    "[Daemon] Subscriber request was superseded by a newer generation"
+                                );
+                                if let Some(client_id) = sub.client_id {
+                                    let resp = ResponseEnvelope::failure(sub.request_id, err_msg);
                                     self.send_ipc_response(client_id, &resp);
                                 }
                             }

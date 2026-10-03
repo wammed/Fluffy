@@ -38,7 +38,8 @@ impl PipelineHandle {
         video_path: &Path,
     ) -> Result<Self> {
         let abs_path = video_path.canonicalize()?;
-        let uri = format!("file://{}", abs_path.display());
+        let uri = gstreamer::glib::filename_to_uri(&abs_path, None)
+            .map_err(|e| FluffyError::Playback(format!("Failed to build URI from path: {e}")))?;
 
         // 1. Create Wayland display handle context
         let gst_wl_context: gstreamer::Context = unsafe {
@@ -125,6 +126,7 @@ impl PipelineHandle {
 
 impl Drop for PipelineHandle {
     fn drop(&mut self) {
+        let _ = self.pipeline.set_state(gstreamer::State::Null);
         tracing::info!(
             event = "old_pipeline_handle_dropped",
             output = %self.output_name,

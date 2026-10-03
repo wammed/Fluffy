@@ -189,6 +189,7 @@ impl JobManager {
         if let Some(job) = self.jobs.get_mut(&id) {
             job.state = JobState::Completed;
         }
+        self.prune_finished_jobs(50);
     }
 
     pub fn fail_job(&mut self, id: JobId, error: String) {
@@ -196,11 +197,31 @@ impl JobManager {
             job.state = JobState::Failed;
             job.error = Some(error);
         }
+        self.prune_finished_jobs(50);
     }
 
     pub fn mark_stale(&mut self, id: JobId) {
         if let Some(job) = self.jobs.get_mut(&id) {
             job.state = JobState::Stale;
+        }
+        self.prune_finished_jobs(50);
+    }
+
+    /// Prunes finished (non-in-flight) jobs keeping at most `keep_max` recent entries.
+    pub fn prune_finished_jobs(&mut self, keep_max: usize) {
+        let mut finished_ids: Vec<JobId> = self
+            .jobs
+            .values()
+            .filter(|j| !j.is_in_flight())
+            .map(|j| j.id)
+            .collect();
+        finished_ids.sort();
+
+        if finished_ids.len() > keep_max {
+            let to_remove = finished_ids.len() - keep_max;
+            for id in finished_ids.into_iter().take(to_remove) {
+                self.jobs.remove(&id);
+            }
         }
     }
 
