@@ -117,11 +117,11 @@ impl GenerationTracker {
                 .insert(target.to_string(), job_generation);
         } else {
             // Validate all outputs atomically before making any state mutations
-            for (_name, &curr) in &self.applied_generations {
+            for (name, &curr) in &self.applied_generations {
                 if job_generation < curr {
                     tracing::warn!(
                         event = "stale_request_rejected",
-                        output = %_name,
+                        output = %name,
                         generation = job_generation,
                         current_generation = curr,
                         session_id = %sid,

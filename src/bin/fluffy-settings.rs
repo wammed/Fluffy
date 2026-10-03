@@ -491,20 +491,37 @@ impl Application for FluffySettingsApp {
             }
 
             Message::ToggleAutostartDaemon(val) => {
-                self.config.startup_and_wallpaper.autostart_daemon = val;
-                let _ = self.config.save();
                 let arg = if val { "enable" } else { "disable" };
-                let _ = std::process::Command::new("systemctl")
+                let output = std::process::Command::new("systemctl")
                     .args(["--user", arg, "fluffy.service"])
                     .output();
-                self.status_message = Some((
-                    if val {
-                        "ログイン時のデーモン自動起動を有効にしました (systemd)".to_string()
-                    } else {
-                        "ログイン時のデーモン自動起動を無効にしました (systemd)".to_string()
-                    },
-                    false,
-                ));
+                match output {
+                    Ok(out) if out.status.success() => {
+                        self.config.startup_and_wallpaper.autostart_daemon = val;
+                        let _ = self.config.save();
+                        self.status_message = Some((
+                            if val {
+                                "ログイン時のデーモン自動起動を有効にしました (systemd)".to_string()
+                            } else {
+                                "ログイン時のデーモン自動起動を無効にしました (systemd)".to_string()
+                            },
+                            false,
+                        ));
+                    }
+                    Ok(out) => {
+                        let err_str = String::from_utf8_lossy(&out.stderr);
+                        self.status_message = Some((
+                            format!("systemd の設定に失敗しました: {err_str}"),
+                            true,
+                        ));
+                    }
+                    Err(e) => {
+                        self.status_message = Some((
+                            format!("systemctl の実行に失敗しました: {e}"),
+                            true,
+                        ));
+                    }
+                }
                 Task::none()
             }
 
@@ -713,8 +730,8 @@ impl Application for FluffySettingsApp {
 
         let fullscreen_card = row![
             column![
-                text("Pause on Fullscreen / 全画面表示時の一時停止").size(14),
-                text("ウィンドウが全画面表示されている間、GPU・CPUリソースを節約するため動画再生を一時停止します。").size(12),
+                text("Pause on Fullscreen / 全画面表示時の一時停止 (Coming soon / 準備中)").size(14),
+                text("ウィンドウが全画面表示されている間、GPU・CPUリソースを節約するため動画再生を一時停止します。（※今後のアップデートでデーモンに実装予定）").size(12),
             ]
             .spacing(2)
             .width(Length::Fill),

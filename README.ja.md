@@ -140,13 +140,20 @@ COMMANDS:
     resume               動画再生を再開
     stop                 動画再生を停止（サーフェスを破棄し元の壁紙へ復帰）
     reload               現在の動画壁紙を再読み込み
+    config               起動時・壁紙動作設定の確認および変更
     help, --help         ヘルプメッセージを表示
 
 OPTIONS:
     --socket <PATH>      対象デーモンの Unix ソケットパス (既定: $XDG_RUNTIME_DIR/fluffy.sock)
     --output <NAME>      対象ディスプレイ名 (例: DP-1, DP-2 / 省略時は全画面)
     --generation <NUM>   レースコンディション防止用モノトニック世代番号
+    --timeout <SECS>     IPC 応答タイムアウト秒数 (既定: set-video は 60秒, その他は 5秒)
     --video <PATH>       (daemon 専用) 起動と同時に再生を開始する動画パス
+
+OPTIONS for 'config':
+    --restore-on-startup <BOOL>  デーモン起動時・ログイン時に前回の壁紙を自動復元 (true/false)
+    --autostart <BOOL>           systemd 経由でログイン時の自動起動を有効化/無効化 (true/false)
+    --pause-fullscreen <BOOL>    ウィンドウ全画面表示時の一時停止設定 (true/false)
 ```
 
 ### 使用例
@@ -163,7 +170,29 @@ fluffy pause --output DP-1
 
 # 全ディスプレイの現在の再生状態を確認
 fluffy status
+
+# 現在の設定内容および保存された壁紙状態の確認
+fluffy config
+
+# 起動時・ログイン時の壁紙自動復元を有効化（オプトイン）
+fluffy config --restore-on-startup true
+
+# systemd ユーザーサービスによるログイン時デーモン自動起動を有効化
+fluffy config --autostart true
 ```
+
+---
+
+## ⚙️ 設定および状態の保存仕様 (XDG 準拠)
+
+Fluffy は XDG Base Directory 仕様に厳格に準拠して設定および状態を管理します:
+
+- **設定ファイル**: `$XDG_CONFIG_HOME/fluffy/config.json` (既定: `~/.config/fluffy/config.json`)
+  - `restore_on_startup`: デーモン起動時やユーザーログイン時に前回適用した壁紙を自動復元するかどうか（既定: `false`、ステートレス起動）。
+  - `autostart_daemon`: systemd ユーザーサービスの自動起動状態のトラッキング。
+  - `pause_on_fullscreen`: 全画面表示ウィンドウ検知時の一時停止設定。
+- **状態ファイル**: `$XDG_STATE_HOME/fluffy/state.json` (既定: `~/.local/state/fluffy/state.json`)
+  - 各ディスプレイ出力ごとに最後に適用された正規化済み動画パスを記録し、起動時の再エンコード不要な高速復元を実現。
 
 ---
 

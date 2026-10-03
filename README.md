@@ -140,13 +140,20 @@ COMMANDS:
     resume               Resume video playback
     stop                 Stop video playback (unmaps surface, restoring desktop)
     reload               Reload current wallpaper video
+    config               Show or update startup and wallpaper settings
     help, --help         Print help information
 
 OPTIONS:
     --socket <PATH>      Target daemon Unix socket path (default: $XDG_RUNTIME_DIR/fluffy.sock)
     --output <NAME>      Target specific display output (e.g. DP-1, DP-2; default: all displays)
     --generation <NUM>   Monotonic generation number for race condition prevention
+    --timeout <SECS>     IPC response timeout (default: 60s for set-video, 5s for others)
     --video <PATH>       (daemon only) Start playback immediately with specified video
+
+OPTIONS for 'config':
+    --restore-on-startup <BOOL>  Restore last wallpaper on daemon startup (true/false)
+    --autostart <BOOL>           Enable/disable daemon autostart on login via systemd (true/false)
+    --pause-fullscreen <BOOL>    Configure pause on fullscreen windows (true/false)
 ```
 
 ### Examples
@@ -163,7 +170,29 @@ fluffy pause --output DP-1
 
 # Query status of all monitors
 fluffy status
+
+# View current configuration and saved wallpaper state
+fluffy config
+
+# Enable wallpaper restoration on startup/login (opt-in)
+fluffy config --restore-on-startup true
+
+# Enable autostart of fluffy daemon via systemd
+fluffy config --autostart true
 ```
+
+---
+
+## ⚙️ Configuration & State Storage
+
+Fluffy conforms strictly to the XDG Base Directory specification:
+
+- **Configuration File**: `$XDG_CONFIG_HOME/fluffy/config.json` (default: `~/.config/fluffy/config.json`)
+  - `restore_on_startup`: Automatically restores saved wallpapers on daemon launch / user login (default: `false`, stateless mode).
+  - `autostart_daemon`: Tracks login autostart state with systemd user service.
+  - `pause_on_fullscreen`: Pauses playback when an application window is in fullscreen.
+- **State File**: `$XDG_STATE_HOME/fluffy/state.json` (default: `~/.local/state/fluffy/state.json`)
+  - Records the last applied normalized video path per display output for zero-delay startup restoration.
 
 ---
 

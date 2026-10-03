@@ -123,6 +123,13 @@ impl DaemonState {
 mod tests {
     use super::*;
 
+    struct TempDirGuard(PathBuf);
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn test_config_default_is_not_restore_on_startup() {
         let cfg = FluffyConfig::default();
@@ -134,6 +141,7 @@ mod tests {
     #[test]
     fn test_config_save_load_roundtrip() {
         let tmp_dir = std::env::temp_dir().join(format!("fluffy_cfg_test_{}", std::process::id()));
+        let _guard = TempDirGuard(tmp_dir.clone());
         let cfg_path = tmp_dir.join("config.json");
 
         let mut cfg = FluffyConfig::default();
@@ -145,14 +153,13 @@ mod tests {
         let loaded = FluffyConfig::load_from(&cfg_path).unwrap();
         assert_eq!(loaded, cfg);
         assert!(loaded.startup_and_wallpaper.restore_on_startup);
-
-        let _ = fs::remove_dir_all(&tmp_dir);
     }
 
     #[test]
     fn test_daemon_state_save_load_roundtrip() {
         let tmp_dir =
             std::env::temp_dir().join(format!("fluffy_state_test_{}", std::process::id()));
+        let _guard = TempDirGuard(tmp_dir.clone());
         let state_path = tmp_dir.join("state.json");
 
         let mut state = DaemonState::default();
@@ -167,7 +174,5 @@ mod tests {
             loaded.outputs.get("HDMI-A-1").unwrap(),
             "/path/to/video2.mp4"
         );
-
-        let _ = fs::remove_dir_all(&tmp_dir);
     }
 }

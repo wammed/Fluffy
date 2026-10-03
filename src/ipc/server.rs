@@ -22,7 +22,8 @@ pub struct PendingRequest {
 struct ConnectedClient {
     stream: UnixStream,
     buffer: Vec<u8>,
-    connected_at: Instant,
+    last_activity: Instant,
+    is_awaiting_response: bool,
 }
 
 pub struct IpcServer {
@@ -30,6 +31,7 @@ pub struct IpcServer {
     listener: UnixListener,
     clients: HashMap<ClientId, ConnectedClient>,
     next_client_id: u64,
+    idle_timeout: Duration,
 }
 
 impl IpcServer {
@@ -81,11 +83,17 @@ impl IpcServer {
             listener,
             clients: HashMap::new(),
             next_client_id: 1,
+            idle_timeout: Duration::from_secs(60),
         })
     }
 
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+
+    /// Configures the idle timeout for clients that have not finished sending a request.
+    pub fn set_idle_timeout(&mut self, timeout: Duration) {
+        self.idle_timeout = timeout;
     }
 
     /// Polls for incoming connections and incoming requests non-blockingly.
@@ -97,12 +105,14 @@ impl IpcServer {
                     stream.set_nonblocking(true)?;
                     let id = ClientId(self.next_client_id);
                     self.next_client_id += 1;
+                    let now = Instant::now();
                     self.clients.insert(
                         id,
                         ConnectedClient {
                             stream,
                             buffer: Vec::new(),
-                            connected_at: Instant::now(),
+                            last_activity: now,
+                            is_awaiting_response: false,
                         },
                     );
                 }
@@ -117,77 +127,103 @@ impl IpcServer {
 
         let mut pending = Vec::new();
         let mut disconnected = Vec::new();
-        let idle_timeout = Duration::from_secs(60);
 
         // 2. Poll existing clients for data
         for (&client_id, client) in self.clients.iter_mut() {
-            // Check idle connection timeout
-            if client.connected_at.elapsed() > idle_timeout && client.buffer.is_empty() {
+            // Check idle connection timeout: only disconnect clients that have not submitted
+            // a complete request and have been inactive for longer than idle_timeout.
+            // Clients that are waiting for long-running responses (e.g. background transcoding)
+            // must NOT be prematurely timed out here.
+            if !client.is_awaiting_response && client.last_activity.elapsed() > self.idle_timeout {
                 tracing::debug!(
                     client_id = client_id.0,
-                    "[IPC] Idle client connection timed out"
+                    "[IPC] Idle client connection timed out (no complete request received)"
                 );
                 disconnected.push(client_id);
                 continue;
             }
 
-            let mut chunk = [0u8; 4096];
-            match client.stream.read(&mut chunk) {
-                Ok(0) => {
-                    // EOF: client closed connection
-                    disconnected.push(client_id);
-                    continue;
-                }
-                Ok(n) => {
-                    client.buffer.extend_from_slice(&chunk[..n]);
+            if !client.is_awaiting_response {
+                let mut chunk = [0u8; 4096];
+                match client.stream.read(&mut chunk) {
+                    Ok(0) => {
+                        // EOF: client closed connection before sending complete request
+                        disconnected.push(client_id);
+                        continue;
+                    }
+                    Ok(n) => {
+                        client.last_activity = Instant::now();
+                        client.buffer.extend_from_slice(&chunk[..n]);
 
-                    if client.buffer.len() > MAX_REQUEST_SIZE {
-                        let resp = ResponseEnvelope::failure(
-                            0,
-                            format!("Request exceeded max size of {} bytes", MAX_REQUEST_SIZE),
-                        );
-                        let _ = Self::send_response_to_stream(&mut client.stream, &resp);
+                        if client.buffer.len() > MAX_REQUEST_SIZE {
+                            let resp = ResponseEnvelope::failure(
+                                0,
+                                format!("Request exceeded max size of {} bytes", MAX_REQUEST_SIZE),
+                            );
+                            let _ = Self::send_response_to_stream(&mut client.stream, &resp);
+                            disconnected.push(client_id);
+                            continue;
+                        }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // No data ready right now
+                    }
+                    Err(_) => {
                         disconnected.push(client_id);
                         continue;
                     }
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // No data ready right now
-                }
-                Err(_) => {
-                    disconnected.push(client_id);
-                    continue;
-                }
-            }
 
-            // Check if buffer contains a complete newline-terminated line
-            while let Some(newline_pos) = client.buffer.iter().position(|&b| b == b'\n') {
-                let line_bytes: Vec<u8> = client.buffer.drain(..=newline_pos).collect();
-                let trimmed = String::from_utf8_lossy(&line_bytes);
-                let trimmed = trimmed.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
+                // Check if buffer contains a complete newline-terminated line
+                while let Some(newline_pos) = client.buffer.iter().position(|&b| b == b'\n') {
+                    let line_bytes: Vec<u8> = client.buffer.drain(..=newline_pos).collect();
+                    let trimmed = String::from_utf8_lossy(&line_bytes);
+                    let trimmed = trimmed.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
 
-                match serde_json::from_str::<RequestEnvelope>(trimmed) {
-                    Ok(req) => {
-                        if let Err(err) = req.validate() {
-                            let resp = ResponseEnvelope::failure(req.request_id, err.to_string());
+                    match serde_json::from_str::<RequestEnvelope>(trimmed) {
+                        Ok(req) => {
+                            if let Err(err) = req.validate() {
+                                let resp = ResponseEnvelope::failure(req.request_id, err.to_string());
+                                let _ = Self::send_response_to_stream(&mut client.stream, &resp);
+                                disconnected.push(client_id);
+                                break;
+                            } else {
+                                client.is_awaiting_response = true;
+                                pending.push(PendingRequest {
+                                    client_id,
+                                    request: req,
+                                });
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let resp = ResponseEnvelope::failure(0, format!("Malformed JSON: {e}"));
                             let _ = Self::send_response_to_stream(&mut client.stream, &resp);
                             disconnected.push(client_id);
                             break;
-                        } else {
-                            pending.push(PendingRequest {
-                                client_id,
-                                request: req,
-                            });
                         }
                     }
-                    Err(e) => {
-                        let resp = ResponseEnvelope::failure(0, format!("Malformed JSON: {e}"));
-                        let _ = Self::send_response_to_stream(&mut client.stream, &resp);
+                }
+            } else {
+                // If awaiting response, check if client prematurely closed connection (EOF check)
+                let mut probe = [0u8; 1];
+                match client.stream.read(&mut probe) {
+                    Ok(0) => {
+                        // Client disconnected while waiting for response
+                        tracing::debug!(client_id = client_id.0, "[IPC] Client disconnected while awaiting response");
                         disconnected.push(client_id);
-                        break;
+                    }
+                    Ok(_) => {
+                        // Unexpected extra data sent while awaiting response; ignore for now
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        // Normal: client is waiting and connection is healthy
+                    }
+                    Err(_) => {
+                        disconnected.push(client_id);
                     }
                 }
             }
@@ -289,5 +325,118 @@ mod tests {
         assert!(socket_path.exists());
         drop(server);
         assert!(!socket_path.exists());
+    }
+
+    #[test]
+    fn test_ipc_server_idle_client_times_out() {
+        let temp_dir = std::env::temp_dir();
+        let socket_path = temp_dir.join(format!("test_idle_{}.sock", std::process::id()));
+
+        let mut server = IpcServer::bind(&socket_path).expect("Failed to bind server");
+        server.set_idle_timeout(Duration::from_millis(50));
+
+        let stream = UnixStream::connect(&socket_path).expect("Client connect failed");
+        // Accept the connection
+        let reqs = server.poll_requests().unwrap();
+        assert!(reqs.is_empty());
+        assert_eq!(server.clients.len(), 1);
+
+        // Sleep longer than idle_timeout without sending complete request
+        std::thread::sleep(Duration::from_millis(80));
+
+        // Poll again; idle client should be timed out and removed
+        let reqs = server.poll_requests().unwrap();
+        assert!(reqs.is_empty());
+        assert_eq!(server.clients.len(), 0);
+
+        drop(stream);
+    }
+
+    #[test]
+    fn test_ipc_server_awaiting_response_not_timed_out() {
+        use std::io::BufRead;
+
+        let temp_dir = std::env::temp_dir();
+        let socket_path = temp_dir.join(format!("test_awaiting_{}.sock", std::process::id()));
+
+        let mut server = IpcServer::bind(&socket_path).expect("Failed to bind server");
+        server.set_idle_timeout(Duration::from_millis(50));
+
+        let mut stream = UnixStream::connect(&socket_path).expect("Client connect failed");
+        let req = RequestEnvelope::new(100, CommandType::Status);
+        let mut data = serde_json::to_vec(&req).unwrap();
+        data.push(b'\n');
+        stream.write_all(&data).unwrap();
+        stream.flush().unwrap();
+
+        // Server polls and receives the request
+        let mut req_received = None;
+        for _ in 0..20 {
+            let reqs = server.poll_requests().unwrap();
+            if let Some(r) = reqs.into_iter().next() {
+                req_received = Some(r);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let r = req_received.expect("Server should have received request");
+        assert_eq!(server.clients.len(), 1);
+
+        // Sleep longer than idle_timeout to simulate long-running background task
+        std::thread::sleep(Duration::from_millis(80));
+
+        // Poll again; client must NOT be disconnected because it is awaiting response
+        let reqs = server.poll_requests().unwrap();
+        assert!(reqs.is_empty());
+        assert_eq!(
+            server.clients.len(),
+            1,
+            "Client awaiting response must remain connected"
+        );
+
+        // Now respond to the client
+        let resp = ResponseEnvelope::success(100, None);
+        server.respond(r.client_id, &resp).unwrap();
+        assert_eq!(server.clients.len(), 0);
+
+        // Verify client receives the response
+        let mut reader = std::io::BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let received_resp: ResponseEnvelope = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(received_resp.request_id, 100);
+        assert!(received_resp.success);
+    }
+
+    #[test]
+    fn test_ipc_server_partial_line_buffering() {
+        let temp_dir = std::env::temp_dir();
+        let socket_path = temp_dir.join(format!("test_partial_{}.sock", std::process::id()));
+
+        let mut server = IpcServer::bind(&socket_path).expect("Failed to bind server");
+        let mut stream = UnixStream::connect(&socket_path).expect("Client connect failed");
+
+        let req = RequestEnvelope::new(200, CommandType::Reload);
+        let json = serde_json::to_string(&req).unwrap();
+        let (part1, part2) = json.split_at(json.len() / 2);
+
+        // Send first chunk (no newline)
+        stream.write_all(part1.as_bytes()).unwrap();
+        stream.flush().unwrap();
+
+        std::thread::sleep(Duration::from_millis(10));
+        let reqs = server.poll_requests().unwrap();
+        assert!(reqs.is_empty(), "Incomplete line should not yield request");
+
+        // Send second chunk with newline
+        let mut rest = part2.as_bytes().to_vec();
+        rest.push(b'\n');
+        stream.write_all(&rest).unwrap();
+        stream.flush().unwrap();
+
+        std::thread::sleep(Duration::from_millis(10));
+        let reqs = server.poll_requests().unwrap();
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].request.request_id, 200);
     }
 }

@@ -160,6 +160,18 @@ impl WallpaperDaemon {
         Ok(())
     }
 
+    /// Applies wallpaper to output(s) and automatically persists state.
+    pub fn apply_video_and_save_state(
+        &mut self,
+        target_output: Option<&str>,
+        path: &Path,
+        generation: Option<u64>,
+    ) -> Result<crate::ipc::SetVideoResult> {
+        let res = self.outputs.set_video(target_output, path, generation)?;
+        self.save_output_wallpaper_state(target_output, path);
+        Ok(res)
+    }
+
     fn save_output_wallpaper_state(&self, target_output: Option<&str>, video_path: &Path) {
         let mut state = crate::config::DaemonState::load();
         if let Some(target) = target_output {
@@ -329,15 +341,12 @@ impl WallpaperDaemon {
                     }
                 };
 
-                let apply_result = match self.outputs.set_video(
+                let apply_result = match self.apply_video_and_save_state(
                     req.output.as_deref(),
                     &cached_path,
                     Some(generation),
                 ) {
-                    Ok(r) => {
-                        self.save_output_wallpaper_state(req.output.as_deref(), &cached_path);
-                        r
-                    }
+                    Ok(r) => r,
                     Err(e) => return ResponseEnvelope::failure(req.request_id, e.to_string()),
                 };
 
@@ -506,23 +515,19 @@ impl WallpaperDaemon {
                             target = ?req.output,
                             "[Daemon] Direct cache hit: video already exists in persistent storage"
                         );
-                        match self
-                            .outputs
-                            .set_video(req.output.as_deref(), path, Some(generation))
-                        {
+                        let resp = match self.apply_video_and_save_state(
+                            req.output.as_deref(),
+                            path,
+                            Some(generation),
+                        ) {
                             Ok(apply_result) => {
-                                self.save_output_wallpaper_state(req.output.as_deref(), path);
                                 let data = serde_json::to_value(&apply_result).ok();
-                                let resp = ResponseEnvelope::success(req.request_id, data);
-                                self.send_ipc_response(client_id, &resp);
-                                return;
+                                ResponseEnvelope::success(req.request_id, data)
                             }
-                            Err(e) => {
-                                let resp = ResponseEnvelope::failure(req.request_id, e.to_string());
-                                self.send_ipc_response(client_id, &resp);
-                                return;
-                            }
-                        }
+                            Err(e) => ResponseEnvelope::failure(req.request_id, e.to_string()),
+                        };
+                        self.send_ipc_response(client_id, &resp);
+                        return;
                     }
                 }
 
@@ -595,7 +600,7 @@ impl WallpaperDaemon {
                     // This guarantees that concurrent requests for different outputs sharing the same
                     // in-flight conversion job are each applied to their respective output correctly.
                     for sub in &job.subscribers {
-                        let apply_res = self.outputs.set_video(
+                        let apply_res = self.apply_video_and_save_state(
                             sub.target_output.as_deref(),
                             &cached_path,
                             Some(sub.generation),
@@ -612,10 +617,6 @@ impl WallpaperDaemon {
                                     target = ?sub.target_output,
                                     cached_path = ?cached_path,
                                     "[Daemon] Wallpaper applied successfully for subscriber"
-                                );
-                                self.save_output_wallpaper_state(
-                                    sub.target_output.as_deref(),
-                                    &cached_path,
                                 );
                                 if let Some(client_id) = sub.client_id {
                                     let data = serde_json::to_value(&set_video_result).ok();
@@ -641,27 +642,6 @@ impl WallpaperDaemon {
                                 );
                                 if let Some(client_id) = sub.client_id {
                                     let resp = ResponseEnvelope::failure(sub.request_id, err_msg);
-                                    self.send_ipc_response(client_id, &resp);
-                                }
-                            }
-                            Err(FluffyError::Ipc(ref err_msg))
-                                if err_msg.starts_with("Stale request generation") =>
-                            {
-                                let sid = crate::benchmark::session_id();
-                                tracing::warn!(
-                                    event = "stale_request_rejected",
-                                    operation = "job_subscriber_stale",
-                                    job_id = job.id,
-                                    request_id = sub.request_id,
-                                    generation = sub.generation,
-                                    output = ?sub.target_output,
-                                    session_id = %sid,
-                                    reason = %err_msg,
-                                    "[Daemon] Subscriber request was superseded by a newer generation"
-                                );
-                                if let Some(client_id) = sub.client_id {
-                                    let resp =
-                                        ResponseEnvelope::failure(sub.request_id, err_msg.clone());
                                     self.send_ipc_response(client_id, &resp);
                                 }
                             }

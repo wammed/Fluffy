@@ -47,6 +47,11 @@ OPTIONS for IPC client commands:
     --output <NAME>      Target specific output (default: all outputs)
     --generation <NUM>   Generation number for video switch
     --timeout <SECS>     IPC response timeout (default: 60s for set-video, 5s for others)
+
+OPTIONS for 'config':
+    --restore-on-startup <BOOL>  Restore last wallpaper on daemon startup (true/false)
+    --autostart <BOOL>           Enable/disable daemon autostart on login via systemd (true/false)
+    --pause-fullscreen <BOOL>    Configure pause on fullscreen windows (true/false)
 "#
     );
 }
@@ -316,7 +321,7 @@ fn cmd_set_video(args: &[String]) -> Result<()> {
     let timeout = parse_timeout_arg(args).unwrap_or(std::time::Duration::from_secs(60));
     println!("[Fluffy] Requesting wallpaper change to: {:?}", abs_path);
     println!(
-        "         (If normalization is required, transcoding runs asynchronously in background without interrupting current playback)"
+        "         (If normalization is required, daemon converts in background without interrupting current playback; waiting for completion...)"
     );
     let client = IpcClient::with_timeout(&socket, timeout);
     client.set_video(&abs_path, output.as_deref(), generation)?;
@@ -424,6 +429,14 @@ fn cmd_bench(args: &[String]) -> Result<()> {
     std::process::exit(1);
 }
 
+fn parse_bool_value(s: &str) -> Option<bool> {
+    match s.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" | "enable" => Some(true),
+        "false" | "0" | "no" | "off" | "disable" => Some(false),
+        _ => None,
+    }
+}
+
 fn cmd_config(args: &[String]) -> Result<()> {
     let mut config = FluffyConfig::load();
     let mut modified = false;
@@ -431,23 +444,55 @@ fn cmd_config(args: &[String]) -> Result<()> {
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--restore-on-startup" && i + 1 < args.len() {
-            let val = args[i + 1].parse::<bool>().unwrap_or(false);
-            config.startup_and_wallpaper.restore_on_startup = val;
-            modified = true;
+            if let Some(val) = parse_bool_value(&args[i + 1]) {
+                config.startup_and_wallpaper.restore_on_startup = val;
+                modified = true;
+            } else {
+                eprintln!(
+                    "[Fluffy] Warning: invalid boolean value for --restore-on-startup: '{}' (use true/false)",
+                    args[i + 1]
+                );
+            }
             i += 2;
         } else if args[i] == "--autostart" && i + 1 < args.len() {
-            let val = args[i + 1].parse::<bool>().unwrap_or(false);
-            config.startup_and_wallpaper.autostart_daemon = val;
-            let arg = if val { "enable" } else { "disable" };
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", arg, "fluffy.service"])
-                .output();
-            modified = true;
+            if let Some(val) = parse_bool_value(&args[i + 1]) {
+                config.startup_and_wallpaper.autostart_daemon = val;
+                let arg = if val { "enable" } else { "disable" };
+                match std::process::Command::new("systemctl")
+                    .args(["--user", arg, "fluffy.service"])
+                    .output()
+                {
+                    Ok(out) if out.status.success() => {
+                        println!("[Fluffy] systemd fluffy.service {arg}d successfully.");
+                    }
+                    Ok(out) => {
+                        let err = String::from_utf8_lossy(&out.stderr);
+                        eprintln!(
+                            "[Fluffy] Warning: Failed to {arg} fluffy.service via systemctl: {err}"
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("[Fluffy] Warning: Failed to execute systemctl: {e}");
+                    }
+                }
+                modified = true;
+            } else {
+                eprintln!(
+                    "[Fluffy] Warning: invalid boolean value for --autostart: '{}' (use true/false)",
+                    args[i + 1]
+                );
+            }
             i += 2;
         } else if args[i] == "--pause-fullscreen" && i + 1 < args.len() {
-            let val = args[i + 1].parse::<bool>().unwrap_or(false);
-            config.startup_and_wallpaper.pause_on_fullscreen = val;
-            modified = true;
+            if let Some(val) = parse_bool_value(&args[i + 1]) {
+                config.startup_and_wallpaper.pause_on_fullscreen = val;
+                modified = true;
+            } else {
+                eprintln!(
+                    "[Fluffy] Warning: invalid boolean value for --pause-fullscreen: '{}' (use true/false)",
+                    args[i + 1]
+                );
+            }
             i += 2;
         } else {
             i += 1;
@@ -471,7 +516,7 @@ fn cmd_config(args: &[String]) -> Result<()> {
         config.startup_and_wallpaper.autostart_daemon
     );
     println!(
-        "    pause_on_fullscreen: {} (Pause video when window is fullscreen)",
+        "    pause_on_fullscreen: {} (Pause video when window is fullscreen - daemon support coming soon)",
         config.startup_and_wallpaper.pause_on_fullscreen
     );
 
