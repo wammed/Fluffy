@@ -1715,6 +1715,7 @@ name = "fluffy"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "cosmic-protocols",
  "ctrlc",
  "gstreamer",
  "gstreamer-video",

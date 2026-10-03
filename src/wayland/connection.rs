@@ -1,3 +1,7 @@
+use cosmic_protocols::toplevel_info::v1::client::{
+    zcosmic_toplevel_handle_v1::{self, ZcosmicToplevelHandleV1},
+    zcosmic_toplevel_info_v1::{self, ZcosmicToplevelInfoV1},
+};
 use smithay_client_toolkit::{
     compositor::CompositorState,
     output::OutputState,
@@ -49,6 +53,7 @@ pub struct WaylandState {
     pub layer_shell: LayerShell,
     pub shm: Shm,
     pub output_events: Vec<WaylandOutputEvent>,
+    pub cosmic_toplevel_info: Option<ZcosmicToplevelInfoV1>,
     pub foreign_toplevel_manager: Option<ZwlrForeignToplevelManagerV1>,
     pub fullscreen_toplevels: HashSet<wayland_client::backend::ObjectId>,
     pub pending_toplevel_states: HashMap<wayland_client::backend::ObjectId, bool>,
@@ -171,11 +176,21 @@ impl wayland_client::Dispatch<ZwlrForeignToplevelManagerV1, ()> for WaylandState
             zwlr_foreign_toplevel_manager_v1::Event::Finished => {
                 tracing::info!("[Wayland] foreign toplevel manager finished");
                 state.foreign_toplevel_manager = None;
-                state.supports_fullscreen_detection = false;
+                if state.cosmic_toplevel_info.is_none() {
+                    state.supports_fullscreen_detection = false;
+                }
             }
             _ => {}
         }
     }
+
+    wayland_client::event_created_child!(
+        WaylandState,
+        ZwlrForeignToplevelManagerV1,
+        [
+            zwlr_foreign_toplevel_manager_v1::EVT_TOPLEVEL_OPCODE => (ZwlrForeignToplevelHandleV1, ()),
+        ]
+    );
 }
 
 impl wayland_client::Dispatch<ZwlrForeignToplevelHandleV1, ()> for WaylandState {
@@ -225,6 +240,87 @@ impl wayland_client::Dispatch<ZwlrForeignToplevelHandleV1, ()> for WaylandState 
     }
 }
 
+impl wayland_client::Dispatch<ZcosmicToplevelInfoV1, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZcosmicToplevelInfoV1,
+        event: zcosmic_toplevel_info_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zcosmic_toplevel_info_v1::Event::Toplevel { toplevel: _ } => {
+                // New toplevel handle created, queue handles tracking via ZcosmicToplevelHandleV1 dispatch
+            }
+            zcosmic_toplevel_info_v1::Event::Finished => {
+                tracing::info!("[Wayland] COSMIC toplevel info finished");
+                state.cosmic_toplevel_info = None;
+                if state.foreign_toplevel_manager.is_none() {
+                    state.supports_fullscreen_detection = false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(
+        WaylandState,
+        ZcosmicToplevelInfoV1,
+        [
+            zcosmic_toplevel_info_v1::EVT_TOPLEVEL_OPCODE => (ZcosmicToplevelHandleV1, ()),
+        ]
+    );
+}
+
+impl wayland_client::Dispatch<ZcosmicToplevelHandleV1, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        proxy: &ZcosmicToplevelHandleV1,
+        event: zcosmic_toplevel_handle_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            zcosmic_toplevel_handle_v1::Event::State { state: state_bytes } => {
+                const COSMIC_STATE_FULLSCREEN: u32 = 3;
+                let is_fullscreen = state_bytes.as_chunks::<4>().0.iter().any(|chunk| {
+                    let val = u32::from_ne_bytes(*chunk);
+                    val == COSMIC_STATE_FULLSCREEN
+                });
+                state
+                    .pending_toplevel_states
+                    .insert(proxy.id(), is_fullscreen);
+            }
+            zcosmic_toplevel_handle_v1::Event::Done => {
+                let was_any_fullscreen = !state.fullscreen_toplevels.is_empty();
+                if let Some(&is_fullscreen) = state.pending_toplevel_states.get(&proxy.id()) {
+                    if is_fullscreen {
+                        state.fullscreen_toplevels.insert(proxy.id());
+                    } else {
+                        state.fullscreen_toplevels.remove(&proxy.id());
+                    }
+                }
+                let is_any_fullscreen = !state.fullscreen_toplevels.is_empty();
+                if was_any_fullscreen != is_any_fullscreen {
+                    state.fullscreen_events.push(is_any_fullscreen);
+                }
+            }
+            zcosmic_toplevel_handle_v1::Event::Closed => {
+                let was_any_fullscreen = !state.fullscreen_toplevels.is_empty();
+                state.pending_toplevel_states.remove(&proxy.id());
+                state.fullscreen_toplevels.remove(&proxy.id());
+                let is_any_fullscreen = !state.fullscreen_toplevels.is_empty();
+                if was_any_fullscreen != is_any_fullscreen {
+                    state.fullscreen_events.push(is_any_fullscreen);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 smithay_client_toolkit::delegate_registry!(WaylandState);
 smithay_client_toolkit::delegate_dispatch2!(WaylandState);
 
@@ -243,28 +339,47 @@ impl WaylandContext {
         let shm = Shm::bind(&globals, &qh)
             .map_err(|e| FluffyError::Wayland(format!("Failed to bind wl_shm: {e}")))?;
 
-        // Pre-check if compositor advertises foreign-toplevel protocol
-        let has_foreign_toplevel = globals.contents().with_list(|list| {
+        // Pre-check if compositor advertises COSMIC or wlroots foreign-toplevel protocol
+        let has_cosmic_toplevel = globals.contents().with_list(|list| {
+            list.iter()
+                .any(|g| g.interface == "zcosmic_toplevel_info_v1")
+        });
+        let has_wlr_toplevel = globals.contents().with_list(|list| {
             list.iter()
                 .any(|g| g.interface == "zwlr_foreign_toplevel_manager_v1")
         });
 
-        let foreign_toplevel_manager = if has_foreign_toplevel {
+        let (cosmic_toplevel_info, foreign_toplevel_manager) = if has_cosmic_toplevel {
             tracing::info!(
-                operation = "foreign_toplevel_detect",
-                "[Wayland] Compositor supports foreign-toplevel protocol: fullscreen detection available"
+                operation = "toplevel_detect",
+                "[Wayland] Compositor supports COSMIC toplevel protocol: fullscreen detection available"
             );
-            registry_state
-                .bind_one::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 1..=3, ())
-                .ok()
+            (
+                registry_state
+                    .bind_one::<ZcosmicToplevelInfoV1, _, _>(&qh, 1..=3, ())
+                    .ok(),
+                None,
+            )
+        } else if has_wlr_toplevel {
+            tracing::info!(
+                operation = "toplevel_detect",
+                "[Wayland] Compositor supports wlroots foreign-toplevel protocol: fullscreen detection available"
+            );
+            (
+                None,
+                registry_state
+                    .bind_one::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 1..=3, ())
+                    .ok(),
+            )
         } else {
             tracing::warn!(
-                operation = "foreign_toplevel_detect",
-                "[Wayland] Compositor does NOT advertise foreign-toplevel protocol: auto-pause on fullscreen unavailable"
+                operation = "toplevel_detect",
+                "[Wayland] Compositor does NOT advertise COSMIC or wlroots toplevel protocol: auto-pause on fullscreen unavailable"
             );
-            None
+            (None, None)
         };
-        let supports_fullscreen_detection = foreign_toplevel_manager.is_some();
+        let supports_fullscreen_detection =
+            cosmic_toplevel_info.is_some() || foreign_toplevel_manager.is_some();
 
         let mut state = WaylandState {
             registry_state,
@@ -273,6 +388,7 @@ impl WaylandContext {
             layer_shell,
             shm,
             output_events: Vec::new(),
+            cosmic_toplevel_info,
             foreign_toplevel_manager,
             fullscreen_toplevels: HashSet::new(),
             pending_toplevel_states: HashMap::new(),
