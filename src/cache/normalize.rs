@@ -39,6 +39,19 @@ pub fn transcode_video_with_cancel<P: AsRef<Path>, Q: AsRef<Path>>(
     probe_info: &VideoStreamInfo,
     cancel_token: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
+    transcode_video_with_crossfade(input_path, output_path, probe_info, cancel_token, None)
+}
+
+/// Transcodes an input video with optional cancellation token and seamless loop crossfade.
+/// When `crossfade_secs` is provided and the video duration is sufficient, the video's tail
+/// is blended into the head using ffmpeg's xfade filter, producing a seamlessly looping video.
+pub fn transcode_video_with_crossfade<P: AsRef<Path>, Q: AsRef<Path>>(
+    input_path: P,
+    output_path: Q,
+    probe_info: &VideoStreamInfo,
+    cancel_token: Option<&std::sync::atomic::AtomicBool>,
+    crossfade_secs: Option<f64>,
+) -> Result<()> {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
@@ -54,8 +67,44 @@ pub fn transcode_video_with_cancel<P: AsRef<Path>, Q: AsRef<Path>>(
         "-v", "error", // Suppress normal banners
         "-i",
     ])
-    .arg(input)
-    .args([
+    .arg(input);
+
+    let use_crossfade = if let Some(fade_sec) = crossfade_secs {
+        if let Some(duration) = probe_info.duration_secs {
+            duration > fade_sec * 2.0 && fade_sec >= 0.05
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if use_crossfade {
+        let fade_sec = crossfade_secs.unwrap();
+        let duration = probe_info.duration_secs.unwrap();
+        let effective_fade = fade_sec.min(duration / 3.0);
+        let split_time = duration - effective_fade;
+
+        let filter_complex = format!(
+            "[0:v]split=2[v_base][v_tail];\
+             [v_tail]trim=start={split_time:.3}:end={duration:.3},setpts=PTS-STARTPTS[part_tail];\
+             [v_base]trim=start=0:end={split_time:.3},setpts=PTS-STARTPTS[part_main];\
+             [part_tail][part_main]xfade=transition=fade:duration={effective_fade:.3}:offset=0,scale={target_w}:{target_h}[outv]"
+        );
+
+        tracing::info!(
+            operation = "ffmpeg_xfade_loop",
+            duration = duration,
+            fade_sec = effective_fade,
+            "[Normalize] Applying seamless loop crossfade filter via ffmpeg xfade"
+        );
+
+        cmd.args(["-filter_complex", &filter_complex, "-map", "[outv]"]);
+    } else {
+        cmd.args(["-vf", &scale_filter]);
+    }
+
+    cmd.args([
         "-an", // Drop audio
         "-sn", // Drop subtitles
         "-c:v",
@@ -64,8 +113,6 @@ pub fn transcode_video_with_cancel<P: AsRef<Path>, Q: AsRef<Path>>(
         "yuv420p",
         "-r",
         &DEFAULT_FPS.to_string(),
-        "-vf",
-        &scale_filter,
         "-crf",
         &DEFAULT_CRF.to_string(),
         "-preset",
@@ -168,5 +215,66 @@ mod tests {
         assert_eq!(normalize_even_dimensions(3839, 2159), (3838, 2158));
         // Boundary case min 2
         assert_eq!(normalize_even_dimensions(1, 1), (2, 2));
+    }
+
+    #[test]
+    fn test_transcode_video_with_seamless_crossfade() {
+        let temp_dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let in_file = temp_dir.join(format!("fluffy_test_xfade_in_{pid}.mp4"));
+        let out_file = temp_dir.join(format!("fluffy_test_xfade_out_{pid}.mp4"));
+
+        // Create 4-second test video
+        let gen_status = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=4:size=320x240:rate=30",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&in_file)
+            .status();
+
+        let Ok(status) = gen_status else {
+            return; // ffmpeg not found in environment, skip gracefully
+        };
+        if !status.success() {
+            let _ = fs::remove_file(&in_file);
+            return;
+        }
+
+        let probe_info = match crate::cache::probe::probe_video(&in_file) {
+            Ok(info) => info,
+            Err(_) => {
+                let _ = fs::remove_file(&in_file);
+                return;
+            }
+        };
+
+        // Transcode with 1.0s crossfade
+        let res = transcode_video_with_crossfade(&in_file, &out_file, &probe_info, None, Some(1.0));
+        assert!(res.is_ok(), "Transcode with crossfade failed: {:?}", res);
+        assert!(out_file.exists());
+        assert!(fs::metadata(&out_file).unwrap().len() > 0);
+
+        // Verify output duration is trimmed by ~1.0s (4.0s - 1.0s = 3.0s)
+        if let Ok(out_probe) = crate::cache::probe::probe_video(&out_file) {
+            if let Some(dur) = out_probe.duration_secs {
+                assert!(
+                    dur >= 2.8 && dur <= 3.2,
+                    "Expected duration ~3.0s, got {dur}"
+                );
+            }
+        }
+
+        let _ = fs::remove_file(&in_file);
+        let _ = fs::remove_file(&out_file);
     }
 }

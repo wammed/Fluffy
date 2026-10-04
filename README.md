@@ -32,6 +32,7 @@
 
 - **Non-Destructive Coexistence (`Layer::Bottom`)**: Fluffy never modifies or kills `cosmic-bg`. It paints as an overlay on `Layer::Bottom`, below docks, panels, and windows. If Fluffy stops, your original COSMIC desktop background instantly reappears without desktop disruption.
 - **Zero-Flicker Seamless Switching**: Features dual-pipeline pre-roll architecture. Transitions between loop videos render seamlessly with zero black frames, flashing, or compositor resizes (verified on physical testbed).
+- **Seamless Loop Playback (`about-to-finish` & Crossfade Preprocessing)**: Combines GStreamer's `about-to-finish` gapless pre-roll mechanism with FFmpeg's `xfade` filter head/tail crossfading (`loop_crossfade_ms`). Eliminates playback pauses, decoder teardown, and visual jumps at the loop boundary for endlessly smooth playback.
 - **Hardware-Accelerated Decoding (Preferred & Auto-Detected)**: Hardware decode is preferred; the actual decoder depends on the GStreamer environment and installed drivers. Verified with NVDEC (`nvh264dec`) on the project testbed (NVIDIA GeForce RTX 3080), maintaining minimal CPU utilization and heat, with transparent software fallback (`avdec_h264`).
 - **Architectural Isolation (Daemon vs. GUI)**:
   - **Resident Daemon (`fluffy`)**: Micro-footprint of only **4.7 MB** (stripped: **3.3 MB**) binary size and **40 MB RSS** RAM at idle.
@@ -84,12 +85,29 @@ cargo build --release --features gui
 # 3. Start the background daemon
 ./target/release/fluffy daemon &
 
+# (Recommended) Enable seamless looping with head/tail crossfade:
+# Configure via CLI or add `"loop_crossfade_ms": 1000` to ~/.config/fluffy/config.json
+./target/release/fluffy config --loop-crossfade-ms 1000
+
 # 4. Set a wallpaper video via CLI
 ./target/release/fluffy set-video /path/to/wallpaper.mp4
 
 # 5. Or launch the native COSMIC Settings GUI
 ./target/release/fluffy-settings
 ```
+
+> **💡 Direct edit of `config.json` (`~/.config/fluffy/config.json`)**:
+> You can also directly add `"loop_crossfade_ms": 1000` (1.0s crossfade) using your text editor:
+> ```json
+> {
+>   "startup_and_wallpaper": {
+>     "restore_on_startup": true,
+>     "autostart_daemon": true,
+>     "pause_on_fullscreen": false,
+>     "loop_crossfade_ms": 1000
+>   }
+> }
+> ```
 
 ---
 
@@ -152,10 +170,14 @@ OPTIONS:
     --timeout <SECS>     IPC response timeout (default: 60s for set-video, 5s for others)
     --video <PATH>       (daemon only) Start playback immediately with specified video
 
+OPTIONS for 'import':
+    --crossfade-ms <MS>  Crossfade duration for seamless looping in ms (default: from config)
+
 OPTIONS for 'config':
-    --restore-on-startup <BOOL>  Restore last wallpaper on daemon startup (true/false)
-    --autostart <BOOL>           Enable/disable daemon autostart on login via systemd (true/false)
-    --pause-fullscreen <BOOL>    Configure pause on fullscreen windows (true/false)
+    --restore-on-startup <BOOL>   Restore last wallpaper on daemon startup (true/false)
+    --autostart <BOOL>            Enable/disable daemon autostart on login via systemd (true/false)
+    --pause-fullscreen <BOOL>     Configure pause on fullscreen windows (true/false)
+    --loop-crossfade-ms <MS>      Crossfade duration in ms for seamless looping (0 to disable)
 ```
 
 ### Examples
@@ -181,6 +203,12 @@ fluffy config --restore-on-startup true
 
 # Enable autostart of fluffy daemon via systemd
 fluffy config --autostart true
+
+# Set loop crossfade duration to 1.0 second (1000 ms)
+fluffy config --loop-crossfade-ms 1000
+
+# Pre-import video with 1.0s seamless loop crossfade
+fluffy import ~/Videos/ambient.mp4 --crossfade-ms 1000
 ```
 
 ---
@@ -193,6 +221,7 @@ Fluffy conforms strictly to the XDG Base Directory specification:
   - `restore_on_startup`: Automatically restores saved wallpapers on daemon launch / user login (default: `false`, stateless mode).
   - `autostart_daemon`: Tracks login autostart state with systemd user service.
   - `pause_on_fullscreen`: Pauses playback when an application window is in fullscreen. The settings GUI (`fluffy-settings`) automatically checks and displays compositor compatibility (`🟢 コンポジター対応` / `⚠️ コンポジター非対応`) in real time.
+  - `loop_crossfade_ms`: Duration in milliseconds to crossfade head and tail during transcoding for seamless loop playback (`0` to disable). Produces perfectly seamless video files via FFmpeg's `xfade` filter.
 - **State File**: `$XDG_STATE_HOME/fluffy/state.json` (default: `~/.local/state/fluffy/state.json`)
   - Records the last applied normalized video path per display output for zero-delay startup restoration.
 

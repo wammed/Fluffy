@@ -78,6 +78,10 @@ pub enum Commands {
     Import {
         /// Path to the video file
         path: PathBuf,
+
+        /// Optional duration in milliseconds to crossfade head and tail for seamless loop
+        #[arg(long)]
+        crossfade_ms: Option<u32>,
     },
 
     /// Pause video playback
@@ -129,6 +133,10 @@ pub enum Commands {
         /// Configure pause on fullscreen windows (true/false)
         #[arg(long)]
         pause_fullscreen: Option<bool>,
+
+        /// Configure loop crossfade duration in milliseconds (0 to disable)
+        #[arg(long)]
+        loop_crossfade_ms: Option<u32>,
     },
 }
 
@@ -174,7 +182,7 @@ fn main() -> Result<()> {
             generation,
             Duration::from_secs(timeout),
         ),
-        Some(Commands::Import { path }) => cmd_import(&path),
+        Some(Commands::Import { path, crossfade_ms }) => cmd_import(&path, crossfade_ms),
         Some(Commands::Pause { output }) => cmd_pause(&socket, output.as_deref()),
         Some(Commands::Resume { output }) => cmd_resume(&socket, output.as_deref()),
         Some(Commands::Stop { output }) => cmd_stop(&socket, output.as_deref()),
@@ -187,7 +195,13 @@ fn main() -> Result<()> {
             restore_on_startup,
             autostart,
             pause_fullscreen,
-        }) => cmd_config(restore_on_startup, autostart, pause_fullscreen),
+            loop_crossfade_ms,
+        }) => cmd_config(
+            restore_on_startup,
+            autostart,
+            pause_fullscreen,
+            loop_crossfade_ms,
+        ),
         None => {
             // Default: run daemon (with direct_video if given)
             cmd_daemon(&socket, None, cli.direct_video.as_deref())
@@ -320,7 +334,7 @@ fn cmd_stop(socket: &Path, output: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_import(path: &Path) -> Result<()> {
+fn cmd_import(path: &Path, crossfade_ms: Option<u32>) -> Result<()> {
     let abs_path = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -334,12 +348,25 @@ fn cmd_import(path: &Path) -> Result<()> {
         )));
     }
 
+    let config = FluffyConfig::load();
+    let effective_crossfade = crossfade_ms.or_else(|| {
+        if config.startup_and_wallpaper.loop_crossfade_ms > 0 {
+            Some(config.startup_and_wallpaper.loop_crossfade_ms)
+        } else {
+            None
+        }
+    });
+
     println!(
-        "[Import] Validating and importing to persistent storage: {:?}",
+        "[Import] Validating and importing to persistent storage (crossfade: {:?}): {:?}",
+        effective_crossfade.map(|ms| format!("{ms}ms")),
         abs_path
     );
     let cache = CacheManager::new(CacheManager::default_storage_dir())?;
-    let cached_path = cache.import_video(&abs_path)?;
+    let cached_path = match effective_crossfade {
+        Some(ms) => cache.import_video_with_crossfade(&abs_path, ms)?,
+        None => cache.import_video(&abs_path)?,
+    };
     println!(
         "[Import] Successfully stored in persistent storage: {:?}",
         cached_path
@@ -366,6 +393,7 @@ fn cmd_config(
     restore_on_startup: Option<bool>,
     autostart: Option<bool>,
     pause_fullscreen: Option<bool>,
+    loop_crossfade_ms: Option<u32>,
 ) -> Result<()> {
     let mut config = FluffyConfig::load();
     let mut modified = false;
@@ -401,6 +429,11 @@ fn cmd_config(
         modified = true;
     }
 
+    if let Some(val) = loop_crossfade_ms {
+        config.startup_and_wallpaper.loop_crossfade_ms = val;
+        modified = true;
+    }
+
     if modified {
         config.save()?;
         println!("[Fluffy] Configuration updated successfully.");
@@ -420,6 +453,10 @@ fn cmd_config(
     println!(
         "    pause_on_fullscreen: {} (Pause video when window is fullscreen)",
         config.startup_and_wallpaper.pause_on_fullscreen
+    );
+    println!(
+        "    loop_crossfade_ms:   {} ms (Crossfade head/tail for seamless looping, 0 to disable)",
+        config.startup_and_wallpaper.loop_crossfade_ms
     );
 
     let state = DaemonState::load();

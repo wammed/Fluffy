@@ -332,7 +332,8 @@ impl WallpaperDaemon {
                     Err(e) => return ResponseEnvelope::failure(req.request_id, e.to_string()),
                 };
 
-                let cached_path = match self.cache.import_video(path) {
+                let xfade = self.loop_crossfade_ms();
+                let cached_path = match self.cache.import_video_with_options(path, None, xfade) {
                     Ok(p) => p,
                     Err(e) => {
                         return ResponseEnvelope::failure(
@@ -564,15 +565,17 @@ impl WallpaperDaemon {
                     let storage_dir = self.cache.root_dir().to_path_buf();
                     let tx = self.transcode_tx.clone();
                     let cancel_token = self.job_manager.cancel_token(job_id);
+                    let crossfade_ms = self.loop_crossfade_ms();
 
                     // Run video probe, content hashing, and transcoding on a background worker thread
                     // with cancellation token to avoid blocking main loop and cleanly cancel when superseded.
                     thread::spawn(move || {
                         let manager = CacheManager::new(&storage_dir);
                         let result = match manager {
-                            Ok(mgr) => mgr.import_video_with_cancel(
+                            Ok(mgr) => mgr.import_video_with_options(
                                 &path_buf,
                                 cancel_token.as_ref().map(|a| a.as_ref()),
+                                crossfade_ms,
                             ),
                             Err(e) => Err(e),
                         };
@@ -747,10 +750,21 @@ impl WallpaperDaemon {
         Ok(())
     }
 
+    /// Returns configured loop crossfade duration in milliseconds if enabled.
+    fn loop_crossfade_ms(&self) -> Option<u32> {
+        let config = crate::config::FluffyConfig::load();
+        if config.startup_and_wallpaper.loop_crossfade_ms > 0 {
+            Some(config.startup_and_wallpaper.loop_crossfade_ms)
+        } else {
+            None
+        }
+    }
+
     /// Sets an initial video on startup cleanly without going through IPC envelopes.
     pub fn set_initial_video(&mut self, path: &Path) -> Result<()> {
         let generation = self.outputs.allocate_generation(None, None)?;
-        let cached_path = self.cache.import_video(path)?;
+        let xfade = self.loop_crossfade_ms();
+        let cached_path = self.cache.import_video_with_options(path, None, xfade)?;
         self.apply_video_and_save_state(None, &cached_path, Some(generation))?;
         Ok(())
     }

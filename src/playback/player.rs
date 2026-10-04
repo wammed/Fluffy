@@ -64,7 +64,11 @@ impl GstVideoPlayer {
     }
 
     pub fn loop_count(&self) -> u64 {
-        self.loop_count
+        if let Some(ref handle) = self.pipeline_handle {
+            handle.loop_count.load(std::sync::atomic::Ordering::SeqCst)
+        } else {
+            self.loop_count
+        }
     }
 
     pub fn generation(&self) -> u64 {
@@ -204,6 +208,7 @@ impl GstVideoPlayer {
             );
 
             if let Some(old) = old_handle {
+                self.loop_count = old.loop_count.load(std::sync::atomic::Ordering::SeqCst);
                 tracing::info!(
                     event = "old_pipeline_teardown_started",
                     output = %output,
@@ -375,6 +380,7 @@ impl VideoPlayer for GstVideoPlayer {
                 session_id = %sid,
                 "[Player] Pipeline state set to Null"
             );
+            self.loop_count = handle.loop_count.load(std::sync::atomic::Ordering::SeqCst);
             self.state = PlaybackState::Stopped;
             self.current_video = None;
             tracing::info!(
@@ -405,15 +411,18 @@ impl VideoPlayer for GstVideoPlayer {
             use gstreamer::MessageView;
             match msg.view() {
                 MessageView::Eos(..) => {
-                    self.loop_count += 1;
+                    let count = handle
+                        .loop_count
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        + 1;
                     let sid = crate::benchmark::session_id();
                     tracing::debug!(
-                        event = "playback_loop",
+                        event = "playback_loop_eos_fallback",
                         output = %self.output_name,
                         generation = self.generation,
-                        loop_count = self.loop_count,
+                        loop_count = count,
                         session_id = %sid,
-                        "[Player] EOS reached; seeking to 0 for seamless loop"
+                        "[Player] EOS reached; seeking to 0 (fallback loop)"
                     );
                     let res = handle.pipeline.seek_simple(
                         gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::KEY_UNIT,

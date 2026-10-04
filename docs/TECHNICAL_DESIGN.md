@@ -678,32 +678,44 @@ video change.
 
 ------------------------------------------------------------------------
 
-## 13. Looping
+## 13. Seamless Looping Architecture
 
-Loop playback must happen without recreating the Wayland surface.
+Loop playback must happen without tearing down the Wayland surface or freezing the video decoder. Fluffy achieves truly gapless, seamless looping across two complementary layers:
 
-The preferred behavior is:
+### 13.1 GStreamer `about-to-finish` Gapless Transition (Playback Engine)
 
-``` text
-video EOS
-  |
-  v
-seek to 0
-  |
-  v
-PLAYING
-```
+Standard media players typically wait for `GST_MESSAGE_EOS` before executing a seek to timestamp 0. However, seeking flushes all internal decoder queues and pre-roll buffers, causing tens to hundreds of milliseconds of frozen frames or stutter at the loop boundary.
 
-rather than:
+Fluffy connects directly to GStreamer `playbin`'s **`about-to-finish`** streaming signal:
 
 ``` text
-EOS
- -> destroy pipeline
- -> create pipeline
- -> recreate surface
+Playback nearing end
+        |
+        v
+"about-to-finish" signal fires
+        |
+        v
+Queue same URI into playbin
+        |
+        v
+Next loop pre-rolls in background
+        |
+        v
+Seamless transition to time 0 (0-frame stutter, no decoder flush)
 ```
 
-This reduces latency and avoids visual flicker.
+As a fail-safe fallback for uncommon media formats or containers where `about-to-finish` is not signaled, the pipeline maintains the `seek_simple(0)` handler on `MessageView::Eos`.
+
+### 13.2 FFmpeg `xfade` Seamless Crossfading (Asset Normalization)
+
+If the visual content of a video has distinct differences between its initial and final frames, a player transition will still produce a visible visual jump even with zero latency.
+
+Fluffy provides an automated loop crossfade normalization pipeline (`loop_crossfade_ms` config option, e.g. 1000 ms):
+1. The video stream is split into a tail segment of duration $F$ (e.g. 1.0s) and a main segment of duration $D - F$.
+2. The tail segment is overlaid and blended onto the beginning of the stream using FFmpeg's `xfade=transition=fade` filter.
+3. The new video has duration $D - F$, and its final frame transitions into its initial frame with identical motion vectors and timestamp continuity from the original video.
+
+Combined with `about-to-finish`, videos loop endlessly with zero perceptible seam.
 
 ------------------------------------------------------------------------
 

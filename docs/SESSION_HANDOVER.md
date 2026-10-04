@@ -79,7 +79,7 @@ Per project documentation standards, items are tracked by five clear verificatio
   - `resume()`: Smooth resume without frame drops.
   - `stop()`: Clean pipeline transition to `NULL`.
 - [x] **Zero-flicker seamless video switching**: Dual-pipeline pre-roll architecture verified. Transition from video A (`test.mp4`) to video B (`test2.mp4`) renders completely flicker-free without blank frames or black flashes.
-- [x] **Seamless loop playback**: EOS bus message triggers `seek_simple(ZERO)` without recreating pipeline or surface (verified across 17+ continuous loop cycles on real hardware).
+- [x] **Seamless loop playback**: GStreamer `about-to-finish` gapless pre-roll transition and FFmpeg `xfade` head/tail crossfade normalization (`loop_crossfade_ms`). Maintains safe EOS seek fallback without recreating pipeline or surface.
 
 #### Phase 3: IPC & Daemon Architecture [COMPLETE]
 - [x] **Unix domain socket IPC**:
@@ -329,7 +329,9 @@ Fluffy/
 
 ### GStreamer Playback Core
 - [x] H.264 playback via hardware decoder (`nvh264dec`) (Real-hardware-tested)
-- [x] Seamless loop on EOS without recreation (Real-hardware-tested)
+- [x] `about-to-finish` gapless loop transition without decoder stall (Unit-tested & Real-hardware-tested)
+- [x] FFmpeg `xfade` seamless head/tail crossfading (`loop_crossfade_ms`) (Unit-tested)
+- [x] Safe EOS seek fallback without recreation (Real-hardware-tested)
 - [x] Pause and resume state transitions (Real-hardware-tested)
 - [x] Dual-pipeline flicker-free switching (Real-hardware-tested)
 - [x] Stop & unmap (Real-hardware-tested)

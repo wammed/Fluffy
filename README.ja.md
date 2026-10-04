@@ -32,6 +32,7 @@
 
 - **非破壊オーバーレイ共存モデル (`Layer::Bottom`)**: ネイティブの壁紙デーモン `cosmic-bg` を停止・変更することなく、ドックやパネル、ウィンドウの下層となる `Layer::Bottom` に非破壊で描画。万一 Fluffy が終了または停止した場合も、瞬時に元の静止画壁紙へ復帰します。
 - **黒画面フラッシュゼロのシームレス切替**: デュアルパイプライン・プリロール機構を採用。動画切り替え時に黒画面やちらつき、解像度再交渉が一切発生しません（実機検証済み）。
+- **完全シームレスなループ再生 (`about-to-finish` & クロスフェード前処理)**: GStreamer の `about-to-finish` シグナルによる事前プリロール（ギャップレス再生）と、FFmpeg `xfade` フィルタによる末尾・先頭ブレンド（`loop_crossfade_ms` 設定）を併用。周回境界におけるデコーダ停止・黒画面・カクつきをゼロにし、永久に滑らかに連続するループ再生を実現。
 - **ハードウェア動画再生支援（優先利用方針）**: ハードウェアデコードを優先利用（実際のデコーダは GStreamer 環境およびドライバに依存）。本検証環境（NVIDIA RTX 3080 / CachyOS）にて NVDEC（`nvh264dec`）による低負荷再生を確認済み。非対応環境でもソフトウェアデコード（`avdec_h264`）へ安全にフォールバックします。
 - **常駐デーモンと設定 GUI の完全分離**:
   - **常駐デーモン (`fluffy`)**: わずか **4.7 MB**（strip後 **3.3 MB**）のリリースバイナリサイズ、アイドル時 **40 MB RSS** の省メモリ設計。
@@ -84,12 +85,29 @@ cargo build --release --features gui
 # 3. バックグラウンドデーモンの起動
 ./target/release/fluffy daemon &
 
+# (推奨) シームレスなループ再生を有効化する場合:
+# コマンドで設定するか、~/.config/fluffy/config.json に `"loop_crossfade_ms": 1000` を追記
+./target/release/fluffy config --loop-crossfade-ms 1000
+
 # 4. CLI から動画壁紙を設定
 ./target/release/fluffy set-video /path/to/wallpaper.mp4
 
 # 5. または COSMIC ネイティブ設定 GUI を起動
 ./target/release/fluffy-settings
 ```
+
+> **💡 シームレスループ設定の直接編集 (`~/.config/fluffy/config.json`)**:
+> `~/.config/fluffy/config.json` を直接エディタで開き、`"loop_crossfade_ms": 1000`（1.0秒クロスフェード）を追記することでも有効化できます：
+> ```json
+> {
+>   "startup_and_wallpaper": {
+>     "restore_on_startup": true,
+>     "autostart_daemon": true,
+>     "pause_on_fullscreen": false,
+>     "loop_crossfade_ms": 1000
+>   }
+> }
+> ```
 
 ---
 
@@ -152,10 +170,14 @@ OPTIONS:
     --timeout <SECS>     IPC 応答タイムアウト秒数 (既定: set-video は 60秒, その他は 5秒)
     --video <PATH>       (daemon 専用) 起動と同時に再生を開始する動画パス
 
+OPTIONS for 'import':
+    --crossfade-ms <MS>  シームレスループ用クロスフェード時間 (ミリ秒, 既定: config 設定値)
+
 OPTIONS for 'config':
-    --restore-on-startup <BOOL>  デーモン起動時・ログイン時に前回の壁紙を自動復元 (true/false)
-    --autostart <BOOL>           systemd 経由でログイン時の自動起動を有効化/無効化 (true/false)
-    --pause-fullscreen <BOOL>    ウィンドウ全画面表示時の一時停止設定 (true/false)
+    --restore-on-startup <BOOL>   デーモン起動時・ログイン時に前回の壁紙を自動復元 (true/false)
+    --autostart <BOOL>            systemd 経由でログイン時の自動起動を有効化/無効化 (true/false)
+    --pause-fullscreen <BOOL>     ウィンドウ全画面表示時の一時停止設定 (true/false)
+    --loop-crossfade-ms <MS>      ループ時のクロスフェード時間 (ミリ秒, 0 で無効化)
 ```
 
 ### 使用例
@@ -181,6 +203,12 @@ fluffy config --restore-on-startup true
 
 # systemd ユーザーサービスによるログイン時デーモン自動起動を有効化
 fluffy config --autostart true
+
+# ループ時のクロスフェードを 1.0 秒 (1000 ms) に設定
+fluffy config --loop-crossfade-ms 1000
+
+# 1.0 秒のシームレスクロスフェードをかけて事前インポート
+fluffy import ~/Videos/ambient.mp4 --crossfade-ms 1000
 ```
 
 ---
@@ -193,6 +221,7 @@ Fluffy は XDG Base Directory 仕様に厳格に準拠して設定および状�
   - `restore_on_startup`: デーモン起動時やユーザーログイン時に前回適用した壁紙を自動復元するかどうか（既定: `false`、ステートレス起動）。
   - `autostart_daemon`: systemd ユーザーサービスの自動起動状態のトラッキング。
   - `pause_on_fullscreen`: 全画面表示ウィンドウ検知時の一時停止設定。設定画面（`fluffy-settings`）にて、コンポジターのプロトコル対応状況（`🟢 コンポジター対応` / `⚠️ コンポジター非対応`）をリアルタイムに自動判定・表示します。
+  - `loop_crossfade_ms`: ループ時の末尾・先頭クロスフェード時間（ミリ秒単位、`0` で無効）。動画トランスコード時に FFmpeg `xfade` フィルタで末尾と先頭をブレンドした完全シームレス動画を生成します。
 - **状態ファイル**: `$XDG_STATE_HOME/fluffy/state.json` (既定: `~/.local/state/fluffy/state.json`)
   - 各ディスプレイ出力ごとに最後に適用された正規化済み動画パスを記録し、起動時の再エンコード不要な高速復元を実現。
 

@@ -8,7 +8,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::normalize::{DEFAULT_FPS, normalize_even_dimensions, transcode_video_with_cancel};
+use super::normalize::{DEFAULT_FPS, normalize_even_dimensions, transcode_video_with_crossfade};
 
 use super::probe::probe_video;
 use crate::error::{FluffyError, Result};
@@ -32,6 +32,8 @@ pub struct CacheMetadata {
     pub output: String,
     #[serde(default)]
     pub transcoded: bool,
+    #[serde(default)]
+    pub crossfade_ms: Option<u32>,
 }
 
 pub struct CacheManager {
@@ -185,20 +187,39 @@ impl CacheManager {
         self.import_video_with_cancel(source_path, None)
     }
 
-    /// Imports a video file into persistent storage with optional cancellation support:
-    /// 1. Probes and validates video dimensions (4K boundary check).
-    /// 2. Computes the source content hash.
-    /// 3. Checks if an existing valid storage object exists; if so, reuses it immediately.
-    /// 4. If video is already a compatible profile (H.264, yuv420p, <=30fps, even dims, <=4K):
-    ///    attempts instant zero-copy hardlink first, falling back to copy.
-    /// 5. Otherwise, transcodes via ffmpeg to normalized standard profile with cancellation support.
-    /// 6. Atomically moves temporary file to videos/<hash>.mp4.
-    /// 7. Writes metadata/<hash>.json.
-    /// 8. Returns the final path of the stored MP4.
+    /// Imports a video file into persistent storage with optional cancellation support.
     pub fn import_video_with_cancel<P: AsRef<Path>>(
         &self,
         source_path: P,
         cancel_token: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<PathBuf> {
+        self.import_video_with_options(source_path, cancel_token, None)
+    }
+
+    /// Imports a video with seamless loop crossfade (specified in milliseconds).
+    pub fn import_video_with_crossfade<P: AsRef<Path>>(
+        &self,
+        source_path: P,
+        crossfade_ms: u32,
+    ) -> Result<PathBuf> {
+        self.import_video_with_options(source_path, None, Some(crossfade_ms))
+    }
+
+    /// Imports a video file into persistent storage with optional cancellation and loop crossfade:
+    /// 1. Probes and validates video dimensions (4K boundary check).
+    /// 2. Computes the source content hash.
+    /// 3. Checks if an existing valid storage object exists; if so, reuses it immediately.
+    /// 4. If video is already a compatible profile (and no crossfade is requested):
+    ///    attempts instant zero-copy hardlink first, falling back to copy.
+    /// 5. Otherwise, transcodes via ffmpeg to normalized standard profile (with optional loop crossfade).
+    /// 6. Atomically moves temporary file to storage.
+    /// 7. Writes metadata JSON.
+    /// 8. Returns the final path of the stored MP4.
+    pub fn import_video_with_options<P: AsRef<Path>>(
+        &self,
+        source_path: P,
+        cancel_token: Option<&std::sync::atomic::AtomicBool>,
+        crossfade_ms: Option<u32>,
     ) -> Result<PathBuf> {
         use std::sync::atomic::Ordering;
 
@@ -241,8 +262,15 @@ impl CacheManager {
             return Err(FluffyError::JobCancelled);
         }
 
-        let video_filename = format!("{hash}.mp4");
-        let metadata_filename = format!("{hash}.json");
+        let effective_crossfade = crossfade_ms.filter(|&ms| ms > 0);
+        let (video_filename, metadata_filename) = if let Some(ms) = effective_crossfade {
+            (
+                format!("{hash}_xfade_{ms}.mp4"),
+                format!("{hash}_xfade_{ms}.json"),
+            )
+        } else {
+            (format!("{hash}.mp4"), format!("{hash}.json"))
+        };
 
         let final_video_path = self.videos_dir.join(&video_filename);
         let final_metadata_path = self.metadata_dir.join(&metadata_filename);
@@ -305,8 +333,8 @@ impl CacheManager {
             }
         };
 
-        // Check compatibility
-        let is_compatible = probe_info.is_compatible_profile();
+        // Check compatibility (if crossfade is requested, transcoding is required)
+        let is_compatible = probe_info.is_compatible_profile() && effective_crossfade.is_none();
         let transcoded = if is_compatible {
             tracing::info!(
                 operation = "cache_import",
@@ -315,7 +343,7 @@ impl CacheManager {
                 width = probe_info.width,
                 height = probe_info.height,
                 fps = probe_info.fps,
-                "[Storage] Video is already compatible profile; attempting hardlink, falling back to copy"
+                "[Storage] Video is already compatible profile and no crossfade requested; attempting hardlink, falling back to copy"
             );
             // Optimization 3-1: Try instant zero-copy hardlink first if on the same filesystem
             if let Err(hardlink_err) = fs::hard_link(&canonical_source, &tmp_video_path) {
@@ -343,14 +371,17 @@ impl CacheManager {
                 width = probe_info.width,
                 height = probe_info.height,
                 fps = probe_info.fps,
-                "[Storage] Video requires normalization; transcoding to temporary storage file"
+                crossfade_ms = ?effective_crossfade,
+                "[Storage] Video requires transcoding (normalization or loop crossfade); transcoding to temporary storage file"
             );
             // Optimization 3-2: Support cancellation during ffmpeg transcoding
-            if let Err(e) = transcode_video_with_cancel(
+            let fade_sec = effective_crossfade.map(|ms| ms as f64 / 1000.0);
+            if let Err(e) = transcode_video_with_crossfade(
                 &canonical_source,
                 &tmp_video_path,
                 &probe_info,
                 cancel_token,
+                fade_sec,
             ) {
                 cleanup_tmp(&tmp_video_path);
                 return Err(e);
@@ -386,6 +417,7 @@ impl CacheManager {
             },
             output: video_filename,
             transcoded,
+            crossfade_ms: effective_crossfade,
         };
 
         let tmp_meta_filename = format!(".tmp.{pid}.{now}.{hash}.json");
@@ -417,6 +449,7 @@ impl CacheManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn test_compute_hash_deterministic() {
@@ -448,6 +481,7 @@ mod tests {
             },
             output: "abc123hash.mp4".to_string(),
             transcoded: true,
+            crossfade_ms: None,
         };
 
         let serialized = serde_json::to_string(&meta).unwrap();
@@ -611,6 +645,60 @@ mod tests {
         let p3 = manager.import_video(source).unwrap();
         assert_eq!(p1, p3);
         assert!(meta_path.exists(), "Metadata must be restored");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_cache_import_with_crossfade() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("fluffy_cache_xfade_test_{}", std::process::id()));
+        let manager = CacheManager::new(&temp_dir).expect("Failed to create cache manager");
+
+        let source = temp_dir.join("source.mp4");
+        let gen_status = Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=4:size=320x240:rate=30",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&source)
+            .status();
+
+        let Ok(status) = gen_status else {
+            return;
+        };
+        if !status.success() {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return;
+        }
+
+        // 1. Import with 500ms crossfade
+        let p1 = manager.import_video_with_crossfade(&source, 500).unwrap();
+        assert!(p1.exists());
+        let file_name = p1.file_name().unwrap().to_str().unwrap();
+        assert!(file_name.contains("_xfade_500.mp4"));
+
+        let meta_filename = file_name.replace(".mp4", ".json");
+        let meta_path = manager.metadata_dir().join(&meta_filename);
+        assert!(meta_path.exists());
+
+        let meta_content = fs::read_to_string(&meta_path).unwrap();
+        let meta: CacheMetadata = serde_json::from_str(&meta_content).unwrap();
+        assert_eq!(meta.crossfade_ms, Some(500));
+        assert!(meta.transcoded);
+
+        // 2. Cache hit on second call
+        let p2 = manager.import_video_with_crossfade(&source, 500).unwrap();
+        assert_eq!(p1, p2);
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

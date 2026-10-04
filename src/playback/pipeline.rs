@@ -23,6 +23,7 @@ pub struct PipelineHandle {
     pub generation: u64,
     pub video_id: String,
     pub session_id: String,
+    pub loop_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl PipelineHandle {
@@ -79,7 +80,7 @@ impl PipelineHandle {
             .ok();
 
         let mut playbin_builder = gstreamer::ElementFactory::make("playbin")
-            .property("uri", uri)
+            .property("uri", &uri)
             .property("video-sink", &sink)
             .property("volume", 0.0f64);
 
@@ -113,6 +114,31 @@ impl PipelineHandle {
         let video_id = crate::benchmark::safe_video_id(video_path);
         let session_id = crate::benchmark::session_id().to_string();
 
+        let loop_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        {
+            let uri_clone = uri.clone();
+            let loop_count_cb = loop_count.clone();
+            let out_name_cb = output_name.clone();
+            let gen_cb = generation;
+
+            pipeline.connect("about-to-finish", false, move |values| {
+                if let Ok(elem) = values[0].get::<gstreamer::Element>() {
+                    elem.set_property("uri", &uri_clone);
+                    let count = loop_count_cb.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                    let sid = crate::benchmark::session_id();
+                    tracing::debug!(
+                        event = "playback_loop_gapless",
+                        output = %out_name_cb,
+                        generation = gen_cb,
+                        loop_count = count,
+                        session_id = %sid,
+                        "[Pipeline] about-to-finish signal triggered: queued next URI for seamless loop"
+                    );
+                }
+                None
+            });
+        }
+
         Ok(Self {
             pipeline,
             sink,
@@ -123,6 +149,7 @@ impl PipelineHandle {
             generation,
             video_id,
             session_id,
+            loop_count,
         })
     }
 }

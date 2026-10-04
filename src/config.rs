@@ -25,6 +25,9 @@ pub struct StartupAndWallpaperSettings {
     /// Wallpaper behavior: pause playback when window is maximized or in fullscreen
     #[serde(default)]
     pub pause_on_fullscreen: bool,
+    /// Duration in milliseconds to crossfade head and tail of video during transcode for seamless looping (0 to disable)
+    #[serde(default)]
+    pub loop_crossfade_ms: u32,
 }
 
 impl FluffyConfig {
