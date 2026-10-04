@@ -143,8 +143,11 @@ impl IpcClient {
         Ok(())
     }
 
-    pub fn reload(&self) -> Result<()> {
-        let req = RequestEnvelope::new(1, CommandType::Reload);
+    pub fn reload(&self, output: Option<&str>) -> Result<()> {
+        let mut req = RequestEnvelope::new(1, CommandType::Reload);
+        if let Some(out) = output {
+            req = req.with_output(out);
+        }
         let resp = self.send(&req)?;
         if !resp.success {
             return Err(FluffyError::Ipc(

@@ -146,7 +146,7 @@ impl GstVideoPlayer {
             // Wait for preroll to complete (first frame is committed to the compositor)
             let (state_change_res, current_st, pending_st) = new_handle
                 .pipeline
-                .state(gstreamer::ClockTime::from_seconds(3));
+                .state(gstreamer::ClockTime::from_mseconds(500));
             tracing::debug!(
                 operation = "preroll",
                 res = ?state_change_res,
@@ -208,7 +208,6 @@ impl GstVideoPlayer {
             );
 
             if let Some(old) = old_handle {
-                self.loop_count = old.loop_count.load(std::sync::atomic::Ordering::SeqCst);
                 tracing::info!(
                     event = "old_pipeline_teardown_started",
                     output = %output,
@@ -425,7 +424,7 @@ impl VideoPlayer for GstVideoPlayer {
                         "[Player] EOS reached; seeking to 0 (fallback loop)"
                     );
                     let res = handle.pipeline.seek_simple(
-                        gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::KEY_UNIT,
+                        gstreamer::SeekFlags::FLUSH | gstreamer::SeekFlags::ACCURATE,
                         gstreamer::ClockTime::ZERO,
                     );
                     if let Err(e) = res {

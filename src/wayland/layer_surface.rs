@@ -87,7 +87,7 @@ impl WallpaperSurface {
             .unwrap_or((2560, 1440));
 
         let needed_bytes = (width as usize) * (height as usize) * 4;
-        let pool_capacity = needed_bytes.max(3840 * 2160 * 4);
+        let pool_capacity = needed_bytes;
         let pool = SlotPool::new(pool_capacity, &ctx.state.shm)
             .map_err(|e| FluffyError::Wayland(format!("Failed to create SHM slot pool: {e}")))?;
 
@@ -200,7 +200,7 @@ impl WallpaperSurface {
         self.height = new_height;
 
         let needed_bytes = (new_width as usize) * (new_height as usize) * 4;
-        let pool_capacity = needed_bytes.max(3840 * 2160 * 4);
+        let pool_capacity = needed_bytes;
         // Ensure pool can hold the buffer
         self.pool = SlotPool::new(pool_capacity, &ctx.state.shm)
             .map_err(|e| FluffyError::Wayland(format!("Failed to re-create SHM slot pool: {e}")))?;

@@ -40,6 +40,9 @@ pub struct WallpaperDaemon {
     transcode_tx: mpsc::Sender<TranscodeJobResult>,
     transcode_rx: mpsc::Receiver<TranscodeJobResult>,
     pub job_manager: JobManager,
+    pub user_paused: bool,
+    pub fullscreen_paused: bool,
+    pub config: crate::config::FluffyConfig,
 }
 
 impl WallpaperDaemon {
@@ -112,6 +115,7 @@ impl WallpaperDaemon {
         let ipc_server = IpcServer::bind(socket_path)?;
         let (transcode_tx, transcode_rx) = mpsc::channel();
 
+        let config = crate::config::FluffyConfig::load();
         let mut daemon = Self {
             wayland_ctx,
             outputs: output_manager,
@@ -122,12 +126,31 @@ impl WallpaperDaemon {
             transcode_tx,
             transcode_rx,
             job_manager: JobManager::new(),
+            user_paused: false,
+            fullscreen_paused: false,
+            config,
         };
 
         // Opt-in restoration: only restores if enabled in settings
         let _ = daemon.restore_saved_state_if_enabled();
 
         Ok(daemon)
+    }
+
+    /// Evaluates whether outputs should currently be paused based on user pause and fullscreen state.
+    pub fn is_effective_paused(&self) -> bool {
+        self.user_paused
+            || (self.config.startup_and_wallpaper.pause_on_fullscreen && self.fullscreen_paused)
+    }
+
+    /// Synchronizes the actual output playback states with the effective pause state.
+    pub fn apply_effective_playback_state(&mut self, target: Option<&str>) -> Result<()> {
+        if self.is_effective_paused() {
+            self.outputs.pause(target)?;
+        } else {
+            self.outputs.resume(target)?;
+        }
+        Ok(())
     }
 
     /// Checks settings and restores previous wallpaper state only if opt-in is enabled.
@@ -180,6 +203,9 @@ impl WallpaperDaemon {
     ) -> Result<crate::ipc::SetVideoResult> {
         let res = self.outputs.set_video(target_output, path, generation)?;
         self.save_output_wallpaper_state(target_output, path);
+        if self.is_effective_paused() {
+            let _ = self.outputs.pause(target_output);
+        }
         Ok(res)
     }
 
@@ -221,19 +247,25 @@ impl WallpaperDaemon {
                                 Ok(()) => {
                                     tracing::info!(output = %name, "[Daemon] Successfully initialized hotplugged output");
 
-                                    let config = crate::config::FluffyConfig::load();
                                     let mut restored = false;
-                                    if config.startup_and_wallpaper.restore_on_startup {
+                                    if self.config.startup_and_wallpaper.restore_on_startup {
                                         let state = crate::config::DaemonState::load();
                                         if let Some(video_path_str) = state.outputs.get(&name) {
                                             let path = Path::new(video_path_str);
                                             if path.exists() {
-                                                if let Err(e) =
-                                                    self.outputs.set_video(Some(&name), path, None)
-                                                {
+                                                let current_gen =
+                                                    self.outputs.current_max_generation();
+                                                if let Err(e) = self.outputs.set_video(
+                                                    Some(&name),
+                                                    path,
+                                                    Some(current_gen),
+                                                ) {
                                                     tracing::warn!(output = %name, error = %e, "[Daemon] Failed to restore saved wallpaper for hotplugged output");
                                                 } else {
                                                     tracing::info!(output = %name, path = %video_path_str, "[Daemon] Successfully restored saved wallpaper for hotplugged output");
+                                                    if self.is_effective_paused() {
+                                                        let _ = self.outputs.pause(Some(&name));
+                                                    }
                                                     let _ = self.wayland_ctx.dispatch_pending();
                                                     restored = true;
                                                 }
@@ -242,21 +274,25 @@ impl WallpaperDaemon {
                                     }
 
                                     if !restored {
-                                        // If another output is already playing a wallpaper, match it
+                                        // If another output is already playing a wallpaper, match it without advancing generation
                                         if let Some(active_vid) =
                                             self.outputs.default_active_video()
                                         {
+                                            let current_gen = self.outputs.current_max_generation();
                                             tracing::info!(
                                                 output = %name,
                                                 video = ?active_vid,
+                                                generation = current_gen,
                                                 "[Daemon] Automatically applying active wallpaper to hotplugged output"
                                             );
                                             if let Err(e) = self.outputs.set_video(
                                                 Some(&name),
                                                 &active_vid,
-                                                None,
+                                                Some(current_gen),
                                             ) {
                                                 tracing::warn!(output = %name, error = %e, "[Daemon] Failed to apply active wallpaper to hotplugged output");
+                                            } else if self.is_effective_paused() {
+                                                let _ = self.outputs.pause(Some(&name));
                                             }
                                         }
                                     }
@@ -339,70 +375,22 @@ impl WallpaperDaemon {
             }
 
             CommandType::SetVideo => {
-                let Some(ref path) = req.path else {
-                    return ResponseEnvelope::failure(
-                        req.request_id,
-                        "'set_video' command requires 'path'",
-                    );
-                };
-
-                if !path.exists() {
-                    return ResponseEnvelope::failure(
-                        req.request_id,
-                        format!("Video file does not exist: {:?}", path),
-                    );
-                }
-
-                if let Some(ref target_name) = req.output
-                    && !self.outputs.contains(target_name)
-                {
-                    return ResponseEnvelope::failure(
-                        req.request_id,
-                        format!("Output '{}' not managed by daemon", target_name),
-                    );
-                }
-
-                let generation = match self
-                    .outputs
-                    .allocate_generation(req.output.as_deref(), req.generation)
-                {
-                    Ok(g) => g,
-                    Err(e) => return ResponseEnvelope::failure(req.request_id, e.to_string()),
-                };
-
-                let xfade = self.loop_crossfade_ms();
-                let cached_path = match self.cache.import_video_with_options(path, None, xfade) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        return ResponseEnvelope::failure(
-                            req.request_id,
-                            format!("Video import/normalization failed: {e}"),
-                        );
-                    }
-                };
-
-                let apply_result = match self.apply_video_and_save_state(
-                    req.output.as_deref(),
-                    &cached_path,
-                    Some(generation),
-                ) {
-                    Ok(r) => r,
-                    Err(e) => return ResponseEnvelope::failure(req.request_id, e.to_string()),
-                };
-
-                let data = serde_json::to_value(&apply_result).ok();
-                ResponseEnvelope::success(req.request_id, data)
+                unreachable!(
+                    "CommandType::SetVideo is handled asynchronously before handle_request"
+                );
             }
 
             CommandType::Pause => {
-                if let Err(e) = self.outputs.pause(req.output.as_deref()) {
+                self.user_paused = true;
+                if let Err(e) = self.apply_effective_playback_state(req.output.as_deref()) {
                     return ResponseEnvelope::failure(req.request_id, e.to_string());
                 }
                 ResponseEnvelope::success(req.request_id, None)
             }
 
             CommandType::Resume => {
-                if let Err(e) = self.outputs.resume(req.output.as_deref()) {
+                self.user_paused = false;
+                if let Err(e) = self.apply_effective_playback_state(req.output.as_deref()) {
                     return ResponseEnvelope::failure(req.request_id, e.to_string());
                 }
                 ResponseEnvelope::success(req.request_id, None)
@@ -418,6 +406,9 @@ impl WallpaperDaemon {
             CommandType::Reload => {
                 if let Err(e) = self.outputs.reload(req.output.as_deref()) {
                     return ResponseEnvelope::failure(req.request_id, e.to_string());
+                }
+                if self.is_effective_paused() {
+                    let _ = self.outputs.pause(req.output.as_deref());
                 }
                 ResponseEnvelope::success(req.request_id, None)
             }
@@ -574,11 +565,7 @@ impl WallpaperDaemon {
                 // Canonicalize path for stable in-flight job deduplication without blocking on full-file SHA-256
                 let canonical_source = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
-                // Optimization 3-2: Cancel any existing in-flight jobs targeting this output that have become stale
-                self.job_manager
-                    .cancel_superseded_jobs(req.output.as_deref(), generation);
-
-                // Register with JobManager (in-flight deduplication attaches subscriber without spawning duplicate worker)
+                // Register with JobManager FIRST so that in-flight deduplication attaches subscriber without spawning duplicate worker
                 let (job_id, is_new) = self.job_manager.register_job(
                     &canonical_source,
                     None,
@@ -586,6 +573,14 @@ impl WallpaperDaemon {
                     req.output.clone(),
                     req.request_id,
                     Some(client_id),
+                );
+
+                // Cancel any *other* existing in-flight jobs targeting this output that have become stale,
+                // while preserving the deduplicated in-flight job_id.
+                self.job_manager.cancel_superseded_jobs_except(
+                    req.output.as_deref(),
+                    generation,
+                    Some(job_id),
                 );
 
                 tracing::info!(
@@ -628,6 +623,10 @@ impl WallpaperDaemon {
             _ => {
                 let resp = self.handle_request(&req);
                 self.send_ipc_response(client_id, &resp);
+                if req.command == CommandType::Reload {
+                    self.config = crate::config::FluffyConfig::load();
+                    let _ = self.apply_effective_playback_state(None);
+                }
             }
         }
     }
@@ -790,9 +789,8 @@ impl WallpaperDaemon {
 
     /// Returns configured loop crossfade duration in milliseconds if enabled.
     fn loop_crossfade_ms(&self) -> Option<u32> {
-        let config = crate::config::FluffyConfig::load();
-        if config.startup_and_wallpaper.loop_crossfade_ms > 0 {
-            Some(config.startup_and_wallpaper.loop_crossfade_ms)
+        if self.config.startup_and_wallpaper.loop_crossfade_ms > 0 {
+            Some(self.config.startup_and_wallpaper.loop_crossfade_ms)
         } else {
             None
         }
@@ -809,19 +807,16 @@ impl WallpaperDaemon {
 
     /// Handles window fullscreen status changes to pause/resume wallpaper playback if configured.
     pub fn handle_fullscreen_changed(&mut self, is_fullscreen: bool) -> Result<()> {
-        let config = crate::config::FluffyConfig::load();
-        if !config.startup_and_wallpaper.pause_on_fullscreen {
-            return Ok(());
-        }
-
-        if is_fullscreen {
-            tracing::info!(
-                "[Daemon] Fullscreen window detected: pausing wallpaper playback to save GPU/CPU"
-            );
-            self.outputs.pause(None)?;
-        } else {
-            tracing::info!("[Daemon] Fullscreen window cleared: resuming wallpaper playback");
-            self.outputs.resume(None)?;
+        self.fullscreen_paused = is_fullscreen;
+        if self.config.startup_and_wallpaper.pause_on_fullscreen {
+            if is_fullscreen {
+                tracing::info!(
+                    "[Daemon] Fullscreen window detected: pausing wallpaper playback to save GPU/CPU"
+                );
+            } else {
+                tracing::info!("[Daemon] Fullscreen window cleared: resuming wallpaper playback");
+            }
+            self.apply_effective_playback_state(None)?;
         }
         Ok(())
     }
@@ -833,17 +828,8 @@ impl WallpaperDaemon {
 
         while !self.exit_flag.load(Ordering::SeqCst) {
             if let Err(e) = self.step() {
-                // If Wayland socket is disconnected permanently, exit loop cleanly
-                let is_fatal = match &e {
-                    FluffyError::Wayland(msg) => {
-                        msg.contains("terminated")
-                            || msg.contains("Connection reset")
-                            || msg.contains("Broken pipe")
-                    }
-                    _ => false,
-                };
-
-                if is_fatal {
+                // If Wayland connection or protocol error is fatal, exit loop cleanly
+                if e.is_fatal_wayland() {
                     tracing::warn!(error = %e, "[Daemon] Wayland connection lost; initiating graceful shutdown");
                     break;
                 }
@@ -854,13 +840,13 @@ impl WallpaperDaemon {
 
             // Adaptive sleep:
             // - Active transcoding: 5ms for rapid pipe communication
-            // - Playing video: 16ms (~60Hz frame alignment)
+            // - Actively playing video: 16ms (~60Hz frame alignment)
             // - Idle/Paused/No video: 50ms (greatly saves laptop battery / CPU C-state)
             let is_converting = self.job_manager.is_converting();
-            let has_active_video = self.outputs.default_active_video().is_some();
+            let is_playing = self.outputs.is_any_playing();
             let sleep_dur = if is_converting {
                 Duration::from_millis(5)
-            } else if has_active_video {
+            } else if is_playing {
                 Duration::from_millis(16)
             } else {
                 Duration::from_millis(50)

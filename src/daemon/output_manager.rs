@@ -519,6 +519,22 @@ impl OutputManager {
         Ok(())
     }
 
+    /// Returns true if at least one managed output is currently in the Playing state.
+    pub fn is_any_playing(&self) -> bool {
+        self.outputs
+            .values()
+            .any(|out| out.player.state() == crate::playback::PlaybackState::Playing)
+    }
+
+    /// Returns the maximum applied generation across all outputs (or 0 if none).
+    pub fn current_max_generation(&self) -> u64 {
+        self.outputs
+            .values()
+            .map(|out| out.generation)
+            .max()
+            .unwrap_or(0)
+    }
+
     pub fn stop(&mut self, target_output: Option<&str>) -> Result<()> {
         if let Some(target) = target_output {
             let out = self

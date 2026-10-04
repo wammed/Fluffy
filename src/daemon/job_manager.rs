@@ -218,17 +218,23 @@ impl JobManager {
         self.prune_finished_jobs(50);
     }
 
-    /// Cancels in-flight jobs targeting the given output whose generation is superseded by `new_generation`.
+    /// Cancels in-flight jobs targeting the given output whose generation is superseded by `new_generation`,
+    /// excluding an optional currently registered job ID (e.g. newly deduplicated in-flight job).
     /// Immediately signals the cancellation token so any executing ffmpeg processes terminate.
-    pub fn cancel_superseded_jobs(
+    pub fn cancel_superseded_jobs_except(
         &mut self,
         target_output: Option<&str>,
         new_generation: u64,
+        exclude_job_id: Option<JobId>,
     ) -> Vec<JobId> {
         let mut superseded_ids = Vec::new();
 
         for job in self.jobs.values() {
             if !job.is_in_flight() {
+                continue;
+            }
+
+            if Some(job.id) == exclude_job_id {
                 continue;
             }
 
@@ -258,6 +264,16 @@ impl JobManager {
         }
 
         superseded_ids
+    }
+
+    /// Cancels in-flight jobs targeting the given output whose generation is superseded by `new_generation`.
+    /// Immediately signals the cancellation token so any executing ffmpeg processes terminate.
+    pub fn cancel_superseded_jobs(
+        &mut self,
+        target_output: Option<&str>,
+        new_generation: u64,
+    ) -> Vec<JobId> {
+        self.cancel_superseded_jobs_except(target_output, new_generation, None)
     }
 
     pub fn mark_stale(&mut self, id: JobId) {
@@ -680,5 +696,45 @@ mod tests {
         let cancelled_global = mgr.cancel_superseded_jobs(None, 12);
         assert_eq!(cancelled_global, vec![id2]);
         assert!(cancel_token2.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_job_manager_dedup_then_cancel_preserves_inflight() {
+        let mut mgr = JobManager::new();
+
+        // 1. Initial request for DP-1 with gen 5
+        let (id1, is_new1) = mgr.register_job(
+            Path::new("video1.mp4"),
+            Some("hash1"),
+            5,
+            Some("DP-1".to_string()),
+            1001,
+            Some(ClientId(1)),
+        );
+        assert!(is_new1);
+
+        // 2. Second request arrives for same video on DP-1 with higher gen 6
+        // Registering first deduplicates and attaches subscriber to id1
+        let (id2, is_new2) = mgr.register_job(
+            Path::new("video1.mp4"),
+            Some("hash1"),
+            6,
+            Some("DP-1".to_string()),
+            1002,
+            Some(ClientId(2)),
+        );
+        assert!(!is_new2);
+        assert_eq!(id1, id2);
+
+        // 3. Cancelling superseded jobs for DP-1 while excluding id2 must NOT cancel id1
+        let cancelled = mgr.cancel_superseded_jobs_except(Some("DP-1"), 6, Some(id2));
+        assert!(
+            cancelled.is_empty(),
+            "Deduplicated active job must not be cancelled"
+        );
+
+        let job = mgr.get_job(id1).unwrap();
+        assert_ne!(job.state, JobState::Cancelled);
+        assert_eq!(job.subscribers.len(), 2);
     }
 }

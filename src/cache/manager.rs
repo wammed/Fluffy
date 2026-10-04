@@ -154,14 +154,22 @@ impl CacheManager {
         &self.metadata_dir
     }
 
-    /// Computes SHA-256 hash of the input file content to produce a stable cache key.
-    pub fn compute_source_hash<P: AsRef<Path>>(path: P) -> Result<String> {
+    /// Computes SHA-256 hash of the input file content to produce a stable cache key with cancellation support.
+    pub fn compute_source_hash_with_cancel<P: AsRef<Path>>(
+        path: P,
+        cancel_token: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<String> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
         let mut hasher = Sha256::new();
         let mut buffer = [0u8; 65536];
 
         loop {
+            if let Some(token) = cancel_token
+                && token.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return Err(FluffyError::JobCancelled);
+            }
             let count = reader.read(&mut buffer)?;
             if count == 0 {
                 break;
@@ -171,6 +179,83 @@ impl CacheManager {
 
         let hash_bytes = hasher.finalize();
         Ok(format!("{:x}", hash_bytes))
+    }
+
+    /// Computes SHA-256 hash of the input file content to produce a stable cache key.
+    pub fn compute_source_hash<P: AsRef<Path>>(path: P) -> Result<String> {
+        Self::compute_source_hash_with_cancel(path, None)
+    }
+
+    /// Checks if a file with the same path, size, and mtime was already indexed in metadata,
+    /// avoiding full SHA-256 calculation for cache hits.
+    pub fn find_cached_hash_by_source(
+        &self,
+        canonical_source: &Path,
+        size: u64,
+        mtime: u64,
+    ) -> Option<String> {
+        let source_str = canonical_source.to_str()?;
+        let read_dir = fs::read_dir(&self.metadata_dir).ok()?;
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json")
+                && let Ok(content) = fs::read_to_string(&path)
+                && let Ok(meta) = serde_json::from_str::<CacheMetadata>(&content)
+                && meta.source == source_str
+                && meta.source_size == size
+                && meta.source_mtime == mtime
+            {
+                let stem = path.file_stem()?.to_str()?;
+                let hash = stem.split('_').next()?;
+                return Some(hash.to_string());
+            }
+        }
+        None
+    }
+
+    /// Garbage collection: Prunes cached video objects until total storage size is under `max_bytes`.
+    /// Files are evicted based on oldest modification time.
+    pub fn prune_cache(&self, max_bytes: u64) -> Result<usize> {
+        let mut entries = Vec::new();
+        let mut total_size = 0u64;
+
+        if let Ok(read_dir) = fs::read_dir(&self.videos_dir) {
+            for entry in read_dir.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && let Ok(meta) = fs::metadata(&path)
+                {
+                    let size = meta.len();
+                    let mtime = meta.modified().unwrap_or(UNIX_EPOCH);
+                    total_size += size;
+                    entries.push((path, size, mtime));
+                }
+            }
+        }
+
+        if total_size <= max_bytes {
+            return Ok(0);
+        }
+
+        // Sort by mtime ascending (oldest first)
+        entries.sort_by_key(|(_, _, mtime)| *mtime);
+
+        let mut pruned = 0;
+        for (path, size, _) in entries {
+            if total_size <= max_bytes {
+                break;
+            }
+            if let Ok(()) = fs::remove_file(&path) {
+                total_size = total_size.saturating_sub(size);
+                pruned += 1;
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    let meta_path = self.metadata_dir.join(format!("{stem}.json"));
+                    let _ = fs::remove_file(meta_path);
+                }
+            }
+        }
+
+        Ok(pruned)
     }
 
     /// Imports a video file into persistent storage:
@@ -253,8 +338,42 @@ impl CacheManager {
             .unwrap_or_default()
             .as_secs();
 
-        // 2. Compute source hash
-        let hash = Self::compute_source_hash(&canonical_source)?;
+        let effective_crossfade = crossfade_ms.filter(|&ms| ms > 0);
+
+        // Optimization: Check index cache by source path, size, and mtime to avoid full SHA-256 calculation
+        let fast_hash =
+            self.find_cached_hash_by_source(&canonical_source, source_size, source_mtime);
+        if let Some(ref hash) = fast_hash {
+            let (video_filename, metadata_filename) = if let Some(ms) = effective_crossfade {
+                (
+                    format!("{hash}_xfade_{ms}.mp4"),
+                    format!("{hash}_xfade_{ms}.json"),
+                )
+            } else {
+                (format!("{hash}.mp4"), format!("{hash}.json"))
+            };
+            let final_video_path = self.videos_dir.join(&video_filename);
+            let final_metadata_path = self.metadata_dir.join(&metadata_filename);
+            if final_video_path.exists()
+                && final_metadata_path.exists()
+                && let Ok(meta) = fs::metadata(&final_video_path)
+                && meta.len() > 0
+            {
+                tracing::info!(
+                    operation = "cache_lookup_fast",
+                    source = ?canonical_source,
+                    destination = ?final_video_path,
+                    "[Storage] Fast cache hit (mtime/size match): reusing existing normalized video without re-hashing"
+                );
+                return Ok(final_video_path);
+            }
+        }
+
+        // 2. Compute source hash with cancellation token support
+        let hash = match fast_hash {
+            Some(h) => h,
+            None => Self::compute_source_hash_with_cancel(&canonical_source, cancel_token)?,
+        };
 
         if let Some(token) = cancel_token
             && token.load(Ordering::Relaxed)
@@ -262,7 +381,6 @@ impl CacheManager {
             return Err(FluffyError::JobCancelled);
         }
 
-        let effective_crossfade = crossfade_ms.filter(|&ms| ms > 0);
         let (video_filename, metadata_filename) = if let Some(ms) = effective_crossfade {
             (
                 format!("{hash}_xfade_{ms}.mp4"),
@@ -292,28 +410,24 @@ impl CacheManager {
 
         // Backward compatibility: check if it was cached in root_dir/objects
         let legacy_cached = self.root_dir.join("objects").join(&video_filename);
-        let legacy_meta = self.root_dir.join("metadata").join(&metadata_filename);
         if legacy_cached.exists()
             && let Ok(meta) = fs::metadata(&legacy_cached)
             && meta.len() > 0
         {
-            if let Err(e) = fs::copy(&legacy_cached, &final_video_path) {
-                tracing::warn!(operation = "legacy_migration", error = %e, "[Storage] Failed to copy legacy cache video to storage");
-            } else {
-                tracing::info!(
-                    operation = "legacy_migration",
-                    legacy = ?legacy_cached,
-                    destination = ?final_video_path,
-                    "[Storage] Migrated legacy cache to persistent storage"
-                );
+            match fs::copy(&legacy_cached, &final_video_path) {
+                Ok(_) => {
+                    tracing::info!(
+                        operation = "legacy_migration",
+                        legacy = ?legacy_cached,
+                        destination = ?final_video_path,
+                        "[Storage] Migrated legacy cache to persistent storage"
+                    );
+                    return Ok(final_video_path);
+                }
+                Err(e) => {
+                    tracing::warn!(operation = "legacy_migration", error = %e, "[Storage] Failed to copy legacy cache video to storage; proceeding with transcode");
+                }
             }
-            if legacy_meta.exists()
-                && !final_metadata_path.exists()
-                && let Err(e) = fs::copy(&legacy_meta, &final_metadata_path)
-            {
-                tracing::debug!(operation = "legacy_migration", error = %e, "[Storage] Failed to copy legacy metadata");
-            }
-            return Ok(final_video_path);
         }
 
         // 4. Create unique temporary file for atomic installation
@@ -699,6 +813,33 @@ mod tests {
         // 2. Cache hit on second call
         let p2 = manager.import_video_with_crossfade(&source, 500).unwrap();
         assert_eq!(p1, p2);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_prune_cache_gc() {
+        let temp_dir = std::env::temp_dir().join(format!("fluffy_gc_test_{}", std::process::id()));
+        let manager = CacheManager::new(&temp_dir).unwrap();
+
+        let v1 = manager.videos_dir().join("v1.mp4");
+        let v2 = manager.videos_dir().join("v2.mp4");
+        let m1 = manager.metadata_dir().join("v1.json");
+        let m2 = manager.metadata_dir().join("v2.json");
+
+        fs::write(&v1, vec![0u8; 1000]).unwrap();
+        fs::write(&m1, b"{}").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        fs::write(&v2, vec![0u8; 1000]).unwrap();
+        fs::write(&m2, b"{}").unwrap();
+
+        // Pruning with max_bytes 1500 should prune the oldest video (v1)
+        let pruned = manager.prune_cache(1500).unwrap();
+        assert_eq!(pruned, 1);
+        assert!(!v1.exists());
+        assert!(!m1.exists());
+        assert!(v2.exists());
+        assert!(m2.exists());
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

@@ -5,6 +5,9 @@ pub enum FluffyError {
     #[error("Wayland error: {0}")]
     Wayland(String),
 
+    #[error("Wayland connection disconnected: {0}")]
+    WaylandDisconnected(String),
+
     #[error("Wayland connection error: {0}")]
     WaylandConnect(#[from] wayland_client::ConnectError),
 
@@ -52,6 +55,26 @@ pub enum FluffyError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl FluffyError {
+    /// Determines whether the error represents a permanent/fatal Wayland connection or protocol failure.
+    pub fn is_fatal_wayland(&self) -> bool {
+        match self {
+            FluffyError::WaylandDisconnected(_) | FluffyError::WaylandConnect(_) => true,
+            FluffyError::WaylandDispatch(wayland_client::DispatchError::Backend(
+                wayland_client::backend::WaylandError::Protocol(_)
+                | wayland_client::backend::WaylandError::Io(_),
+            )) => true,
+            FluffyError::Wayland(msg) => {
+                msg.contains("terminated")
+                    || msg.contains("Connection reset")
+                    || msg.contains("Broken pipe")
+                    || msg.contains("protocol")
+            }
+            _ => false,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, FluffyError>;

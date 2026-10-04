@@ -65,9 +65,7 @@ pub fn transcode_video_with_crossfade<P: AsRef<Path>, Q: AsRef<Path>>(
     cmd.args([
         "-y", // Overwrite output file
         "-v", "error", // Suppress normal banners
-        "-i",
-    ])
-    .arg(input);
+    ]);
 
     let use_crossfade = if let Some(fade_sec) = crossfade_secs {
         if let Some(duration) = probe_info.duration_secs {
@@ -85,10 +83,17 @@ pub fn transcode_video_with_crossfade<P: AsRef<Path>, Q: AsRef<Path>>(
         let effective_fade = fade_sec.min(duration / 3.0);
         let split_time = duration - effective_fade;
 
+        // Input 0: tail segment sought via input-level fast seek (-ss split_time)
+        // Input 1: full/main input
+        // Using two separate inputs prevents split-filter frame accumulation and OOM on long/high-res videos.
+        cmd.args(["-ss", &format!("{split_time:.3}"), "-i"])
+            .arg(input)
+            .args(["-i"])
+            .arg(input);
+
         let filter_complex = format!(
-            "[0:v]split=2[v_base][v_tail];\
-             [v_tail]trim=start={split_time:.3}:end={duration:.3},setpts=PTS-STARTPTS[part_tail];\
-             [v_base]trim=start=0:end={split_time:.3},setpts=PTS-STARTPTS[part_main];\
+            "[0:v]setpts=PTS-STARTPTS[part_tail];\
+             [1:v]trim=end={split_time:.3},setpts=PTS-STARTPTS[part_main];\
              [part_tail][part_main]xfade=transition=fade:duration={effective_fade:.3}:offset=0,scale={target_w}:{target_h}[outv]"
         );
 
@@ -96,11 +101,13 @@ pub fn transcode_video_with_crossfade<P: AsRef<Path>, Q: AsRef<Path>>(
             operation = "ffmpeg_xfade_loop",
             duration = duration,
             fade_sec = effective_fade,
-            "[Normalize] Applying seamless loop crossfade filter via ffmpeg xfade"
+            split_time = split_time,
+            "[Normalize] Applying seamless loop crossfade filter via ffmpeg 2-input xfade"
         );
 
         cmd.args(["-filter_complex", &filter_complex, "-map", "[outv]"]);
     } else {
+        cmd.args(["-i"]).arg(input);
         cmd.args(["-vf", &scale_filter]);
     }
 

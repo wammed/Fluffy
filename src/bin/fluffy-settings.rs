@@ -741,7 +741,7 @@ impl Application for FluffySettingsApp {
             column![
                 text("Pause on Fullscreen / 全画面表示時の一時停止").size(14),
                 text("ウィンドウが全画面表示されている間、GPU・CPUリソースを節約するため動画再生を一時停止します。").size(12),
-                text("※ 現在のWaylandコンポジターが zwlr_foreign_toplevel_manager_v1 に対応していないため利用できません。")
+                text("※ 現在のWaylandコンポジターが COSMIC (zcosmic_toplevel_info_v1) または wlroots (zwlr_foreign_toplevel_manager_v1) プロトコルに対応していないため利用できません。")
                     .size(11),
             ]
             .spacing(2)

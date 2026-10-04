@@ -372,7 +372,7 @@ impl WaylandContext {
             );
             (
                 registry_state
-                    .bind_one::<ZcosmicToplevelInfoV1, _, _>(&qh, 1..=3, ())
+                    .bind_one::<ZcosmicToplevelInfoV1, _, _>(&qh, 1..=1, ())
                     .ok(),
                 None,
             )
@@ -515,13 +515,17 @@ impl WaylandContext {
             };
             if !is_would_block {
                 tracing::warn!(error = %e, "[Wayland] Error reading events from Wayland socket");
-                if let wayland_client::backend::WaylandError::Io(io_err) = &e
-                    && (io_err.kind() == std::io::ErrorKind::ConnectionReset
-                        || io_err.kind() == std::io::ErrorKind::BrokenPipe)
-                {
-                    fatal_error = Some(FluffyError::Wayland(format!(
-                        "Wayland connection terminated: {e}"
-                    )));
+                match &e {
+                    wayland_client::backend::WaylandError::Protocol(proto) => {
+                        fatal_error = Some(FluffyError::Wayland(format!(
+                            "Wayland protocol error: {proto}"
+                        )));
+                    }
+                    wayland_client::backend::WaylandError::Io(io_err) => {
+                        fatal_error = Some(FluffyError::WaylandDisconnected(format!(
+                            "Wayland socket I/O disconnected: {io_err}"
+                        )));
+                    }
                 }
             }
         }
@@ -529,18 +533,25 @@ impl WaylandContext {
         // 2. Dispatch pending events in the queue
         if let Err(e) = self.event_queue.dispatch_pending(&mut self.state) {
             tracing::warn!(error = %e, "[Wayland] Error dispatching pending events");
+            fatal_error = Some(FluffyError::WaylandDispatch(e));
         }
 
         // 3. Flush any pending requests to compositor
         if let Err(e) = self.conn.flush() {
             tracing::warn!(error = %e, "[Wayland] Error flushing connection during dispatch_pending");
-            if let wayland_client::backend::WaylandError::Io(io_err) = &e
-                && (io_err.kind() == std::io::ErrorKind::ConnectionReset
-                    || io_err.kind() == std::io::ErrorKind::BrokenPipe)
-            {
-                fatal_error = Some(FluffyError::Wayland(format!(
-                    "Wayland connection terminated: {e}"
-                )));
+            match &e {
+                wayland_client::backend::WaylandError::Protocol(proto) => {
+                    fatal_error = Some(FluffyError::Wayland(format!(
+                        "Wayland protocol error during flush: {proto}"
+                    )));
+                }
+                wayland_client::backend::WaylandError::Io(io_err) => {
+                    if io_err.kind() != std::io::ErrorKind::WouldBlock {
+                        fatal_error = Some(FluffyError::WaylandDisconnected(format!(
+                            "Wayland connection terminated during flush: {io_err}"
+                        )));
+                    }
+                }
             }
         }
 

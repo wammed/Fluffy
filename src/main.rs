@@ -106,7 +106,11 @@ pub enum Commands {
     },
 
     /// Reload current wallpaper video
-    Reload,
+    Reload {
+        /// Target specific output (default: all outputs)
+        #[arg(long)]
+        output: Option<String>,
+    },
 
     /// Record a benchmark workload marker event via IPC
     Mark {
@@ -186,7 +190,7 @@ fn main() -> Result<()> {
         Some(Commands::Pause { output }) => cmd_pause(&socket, output.as_deref()),
         Some(Commands::Resume { output }) => cmd_resume(&socket, output.as_deref()),
         Some(Commands::Stop { output }) => cmd_stop(&socket, output.as_deref()),
-        Some(Commands::Reload) => cmd_reload(&socket),
+        Some(Commands::Reload { output }) => cmd_reload(&socket, output.as_deref()),
         Some(Commands::Mark { label }) => cmd_mark(&socket, &label),
         Some(Commands::Bench { subcommand }) => match subcommand {
             BenchCommands::Mark { label } => cmd_mark(&socket, &label),
@@ -215,7 +219,7 @@ fn cmd_daemon(
     initial_video: Option<&Path>,
 ) -> Result<()> {
     init_logging();
-    tracing::info!("=== Fluffy Video Wallpaper Manager Daemon (Phase 7 Hardened) ===");
+    tracing::info!("=== Fluffy Video Wallpaper Manager Daemon ===");
 
     let exit_flag = Arc::new(AtomicBool::new(false));
     {
@@ -370,10 +374,14 @@ fn cmd_import(path: &Path, crossfade_ms: Option<u32>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_reload(socket: &Path) -> Result<()> {
+fn cmd_reload(socket: &Path, output: Option<&str>) -> Result<()> {
     let client = IpcClient::new(socket);
-    client.reload()?;
-    println!("Reloaded wallpaper.");
+    client.reload(output)?;
+    if let Some(target) = output {
+        println!("Reloaded wallpaper on output '{target}'.");
+    } else {
+        println!("Reloaded wallpaper on all outputs.");
+    }
     Ok(())
 }
 
