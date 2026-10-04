@@ -70,14 +70,14 @@ impl WallpaperDaemon {
 
         let outputs_info = wayland_ctx.outputs();
         if outputs_info.is_empty() {
-            return Err(FluffyError::Wayland(
-                "No Wayland outputs detected".to_string(),
-            ));
-        }
-
-        tracing::info!("[Daemon] Discovered Wayland outputs:");
-        for (name, _) in &outputs_info {
-            tracing::info!(output = %name, "  - Discovered output");
+            tracing::info!(
+                "[Daemon] No Wayland outputs detected yet during initialization; waiting for output events..."
+            );
+        } else {
+            tracing::info!("[Daemon] Discovered Wayland outputs:");
+            for (name, _) in &outputs_info {
+                tracing::info!(output = %name, "  - Discovered output");
+            }
         }
 
         let mut output_manager = OutputManager::new();
@@ -85,17 +85,23 @@ impl WallpaperDaemon {
         // If a specific output is requested, bind only to it;
         // otherwise, bind to ALL discovered outputs concurrently.
         let target_outputs: Vec<(String, _)> = if let Some(req_name) = requested_output {
-            let found = outputs_info
-                .into_iter()
-                .find(|(name, _)| name == req_name)
-                .ok_or_else(|| FluffyError::OutputNotFound(req_name.to_string()))?;
-            vec![found]
+            if let Some(found) = outputs_info.into_iter().find(|(name, _)| name == req_name) {
+                vec![found]
+            } else {
+                tracing::info!(
+                    output = %req_name,
+                    "[Daemon] Requested output not detected yet; will bind upon arrival"
+                );
+                vec![]
+            }
         } else {
             outputs_info
         };
 
         for (name, wl_out) in target_outputs {
-            output_manager.init_output(&mut wayland_ctx, name, wl_out)?;
+            if let Err(e) = output_manager.init_output(&mut wayland_ctx, name.clone(), wl_out) {
+                tracing::warn!(output = %name, error = %e, "[Daemon] Failed to initialize active output");
+            }
         }
 
         tracing::info!(
@@ -150,10 +156,15 @@ impl WallpaperDaemon {
                 .as_ref()
                 .is_none_or(|req| req == output_name)
             {
-                if let Err(e) = self.outputs.set_video(Some(output_name), path, None) {
-                    tracing::warn!(output = %output_name, error = %e, "[Daemon] Failed to restore saved wallpaper for output");
+                if self.outputs.contains(output_name) {
+                    if let Err(e) = self.outputs.set_video(Some(output_name), path, None) {
+                        tracing::warn!(output = %output_name, error = %e, "[Daemon] Failed to restore saved wallpaper for output");
+                    } else {
+                        tracing::info!(output = %output_name, path = %video_path_str, "[Daemon] Successfully restored saved wallpaper for output");
+                        let _ = self.wayland_ctx.dispatch_pending();
+                    }
                 } else {
-                    tracing::info!(output = %output_name, path = %video_path_str, "[Daemon] Successfully restored saved wallpaper for output");
+                    tracing::debug!(output = %output_name, "[Daemon] Output not yet ready during startup restore; will restore upon hotplug");
                 }
             }
         }
@@ -209,17 +220,44 @@ impl WallpaperDaemon {
                             ) {
                                 Ok(()) => {
                                     tracing::info!(output = %name, "[Daemon] Successfully initialized hotplugged output");
-                                    // If another output is already playing a wallpaper, match it
-                                    if let Some(active_vid) = self.outputs.default_active_video() {
-                                        tracing::info!(
-                                            output = %name,
-                                            video = ?active_vid,
-                                            "[Daemon] Automatically applying active wallpaper to hotplugged output"
-                                        );
-                                        if let Err(e) =
-                                            self.outputs.set_video(Some(&name), &active_vid, None)
+
+                                    let config = crate::config::FluffyConfig::load();
+                                    let mut restored = false;
+                                    if config.startup_and_wallpaper.restore_on_startup {
+                                        let state = crate::config::DaemonState::load();
+                                        if let Some(video_path_str) = state.outputs.get(&name) {
+                                            let path = Path::new(video_path_str);
+                                            if path.exists() {
+                                                if let Err(e) =
+                                                    self.outputs.set_video(Some(&name), path, None)
+                                                {
+                                                    tracing::warn!(output = %name, error = %e, "[Daemon] Failed to restore saved wallpaper for hotplugged output");
+                                                } else {
+                                                    tracing::info!(output = %name, path = %video_path_str, "[Daemon] Successfully restored saved wallpaper for hotplugged output");
+                                                    let _ = self.wayland_ctx.dispatch_pending();
+                                                    restored = true;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if !restored {
+                                        // If another output is already playing a wallpaper, match it
+                                        if let Some(active_vid) =
+                                            self.outputs.default_active_video()
                                         {
-                                            tracing::warn!(output = %name, error = %e, "[Daemon] Failed to apply active wallpaper to hotplugged output");
+                                            tracing::info!(
+                                                output = %name,
+                                                video = ?active_vid,
+                                                "[Daemon] Automatically applying active wallpaper to hotplugged output"
+                                            );
+                                            if let Err(e) = self.outputs.set_video(
+                                                Some(&name),
+                                                &active_vid,
+                                                None,
+                                            ) {
+                                                tracing::warn!(output = %name, error = %e, "[Daemon] Failed to apply active wallpaper to hotplugged output");
+                                            }
                                         }
                                     }
                                 }
@@ -794,7 +832,25 @@ impl WallpaperDaemon {
         tracing::info!("[Daemon] Daemon main loop started. Ready for IPC commands.");
 
         while !self.exit_flag.load(Ordering::SeqCst) {
-            self.step()?;
+            if let Err(e) = self.step() {
+                // If Wayland socket is disconnected permanently, exit loop cleanly
+                let is_fatal = match &e {
+                    FluffyError::Wayland(msg) => {
+                        msg.contains("terminated")
+                            || msg.contains("Connection reset")
+                            || msg.contains("Broken pipe")
+                    }
+                    _ => false,
+                };
+
+                if is_fatal {
+                    tracing::warn!(error = %e, "[Daemon] Wayland connection lost; initiating graceful shutdown");
+                    break;
+                }
+
+                tracing::warn!(error = %e, "[Daemon] Transient error during main loop iteration (recovering)");
+                thread::sleep(Duration::from_millis(50));
+            }
 
             // Adaptive sleep:
             // - Active transcoding: 5ms for rapid pipe communication

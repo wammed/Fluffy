@@ -326,7 +326,23 @@ smithay_client_toolkit::delegate_dispatch2!(WaylandState);
 
 impl WaylandContext {
     pub fn init() -> Result<Self> {
-        let conn = Connection::connect_to_env()?;
+        let conn = {
+            let mut attempts = 0;
+            loop {
+                match Connection::connect_to_env() {
+                    Ok(c) => break c,
+                    Err(e) => {
+                        attempts += 1;
+                        if attempts >= 30 {
+                            return Err(FluffyError::Wayland(format!(
+                                "Failed to connect to Wayland compositor after 30 attempts: {e}"
+                            )));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            }
+        };
         let (globals, mut event_queue) = registry_queue_init(&conn)?;
         let qh = event_queue.handle();
 
@@ -398,6 +414,16 @@ impl WaylandContext {
 
         // Roundtrip to enumerate globals & outputs
         event_queue.roundtrip(&mut state)?;
+
+        // Poll outputs briefly if none detected yet (allows compositor time to broadcast display state during startup)
+        for _ in 0..20 {
+            if state.output_state.outputs().next().is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let _ = event_queue.roundtrip(&mut state);
+        }
+
         // Clear initial enumeration events so only post-startup changes are reported
         state.output_events.clear();
 
@@ -475,6 +501,8 @@ impl WaylandContext {
     }
 
     pub fn dispatch_pending(&mut self) -> Result<()> {
+        let mut fatal_error = None;
+
         // 1. Try reading any new events from the Wayland socket without blocking
         if let Some(guard) = self.conn.prepare_read()
             && let Err(e) = guard.read()
@@ -487,6 +515,15 @@ impl WaylandContext {
             };
             if !is_would_block {
                 tracing::warn!(error = %e, "[Wayland] Error reading events from Wayland socket");
+                if let wayland_client::backend::WaylandError::Io(io_err) = &e {
+                    if io_err.kind() == std::io::ErrorKind::ConnectionReset
+                        || io_err.kind() == std::io::ErrorKind::BrokenPipe
+                    {
+                        fatal_error = Some(FluffyError::Wayland(format!(
+                            "Wayland connection terminated: {e}"
+                        )));
+                    }
+                }
             }
         }
 
@@ -498,7 +535,21 @@ impl WaylandContext {
         // 3. Flush any pending requests to compositor
         if let Err(e) = self.conn.flush() {
             tracing::warn!(error = %e, "[Wayland] Error flushing connection during dispatch_pending");
+            if let wayland_client::backend::WaylandError::Io(io_err) = &e {
+                if io_err.kind() == std::io::ErrorKind::ConnectionReset
+                    || io_err.kind() == std::io::ErrorKind::BrokenPipe
+                {
+                    fatal_error = Some(FluffyError::Wayland(format!(
+                        "Wayland connection terminated: {e}"
+                    )));
+                }
+            }
         }
+
+        if let Some(err) = fatal_error {
+            return Err(err);
+        }
+
         Ok(())
     }
 

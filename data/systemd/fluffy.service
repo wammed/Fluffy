@@ -3,7 +3,6 @@ Description=Fluffy Video Wallpaper Manager Daemon
 Documentation=https://github.com/wammed/Fluffy
 PartOf=graphical-session.target
 After=graphical-session.target
-Requisite=graphical-session.target
 
 [Service]
 Type=simple

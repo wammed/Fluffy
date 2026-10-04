@@ -119,8 +119,15 @@ impl IpcServer {
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     break;
                 }
+                Err(ref e)
+                    if e.kind() == std::io::ErrorKind::Interrupted
+                        || e.kind() == std::io::ErrorKind::ConnectionAborted =>
+                {
+                    continue;
+                }
                 Err(e) => {
-                    return Err(FluffyError::Io(e));
+                    tracing::warn!(error = %e, "[IPC] Temporary accept error on socket listener");
+                    break;
                 }
             }
         }
