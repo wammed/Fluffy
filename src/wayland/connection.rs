@@ -515,14 +515,13 @@ impl WaylandContext {
             };
             if !is_would_block {
                 tracing::warn!(error = %e, "[Wayland] Error reading events from Wayland socket");
-                if let wayland_client::backend::WaylandError::Io(io_err) = &e {
-                    if io_err.kind() == std::io::ErrorKind::ConnectionReset
-                        || io_err.kind() == std::io::ErrorKind::BrokenPipe
-                    {
-                        fatal_error = Some(FluffyError::Wayland(format!(
-                            "Wayland connection terminated: {e}"
-                        )));
-                    }
+                if let wayland_client::backend::WaylandError::Io(io_err) = &e
+                    && (io_err.kind() == std::io::ErrorKind::ConnectionReset
+                        || io_err.kind() == std::io::ErrorKind::BrokenPipe)
+                {
+                    fatal_error = Some(FluffyError::Wayland(format!(
+                        "Wayland connection terminated: {e}"
+                    )));
                 }
             }
         }
@@ -535,14 +534,13 @@ impl WaylandContext {
         // 3. Flush any pending requests to compositor
         if let Err(e) = self.conn.flush() {
             tracing::warn!(error = %e, "[Wayland] Error flushing connection during dispatch_pending");
-            if let wayland_client::backend::WaylandError::Io(io_err) = &e {
-                if io_err.kind() == std::io::ErrorKind::ConnectionReset
-                    || io_err.kind() == std::io::ErrorKind::BrokenPipe
-                {
-                    fatal_error = Some(FluffyError::Wayland(format!(
-                        "Wayland connection terminated: {e}"
-                    )));
-                }
+            if let wayland_client::backend::WaylandError::Io(io_err) = &e
+                && (io_err.kind() == std::io::ErrorKind::ConnectionReset
+                    || io_err.kind() == std::io::ErrorKind::BrokenPipe)
+            {
+                fatal_error = Some(FluffyError::Wayland(format!(
+                    "Wayland connection terminated: {e}"
+                )));
             }
         }
 
