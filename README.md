@@ -116,6 +116,18 @@ Verified on physical testbed (CachyOS / NVIDIA GeForce RTX 3080 / COSMIC Desktop
 
 ---
 
+## 🤖 Development & Vibe Coding
+
+This project is a creation of **Vibe Coding**, developed through iterative, conversational collaboration with AI. Rather than simple one-shot code generation, it was built by continuously repeating cycles of:
+
+- 💡 **Ideation**: Conceptualizing a lightweight, non-destructive video wallpaper manager leveraging Wayland Layer-Shell and brainstorming requirements.
+- 📝 **Proposals & Architecture**: Proposing decoupled daemon/GUI architecture, zero-flicker pre-roll playback, and UNIX domain socket IPC protocols.
+- 🛠️ **Implementation**: Generating, refining, and refactoring Rust code across the background daemon, native `libcosmic` GUI, and GStreamer/FFmpeg pipelines.
+- 🔬 **Verification**: Validating Layer-Shell protocol compliance, memory/CPU footprints, and dynamic monitor hotplug behavior.
+- 🧪 **Real-Device Testing & Benchmarking**: Running tests on physical COSMIC Desktop / Wayland testbeds, measuring multi-monitor performance benchmarks, and iterating on edge-case bug fixes.
+
+---
+
 ## 📄 License
 
 Fluffy is licensed under the [MIT License](LICENSE).  

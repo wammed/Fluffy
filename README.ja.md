@@ -118,7 +118,19 @@ CachyOS / NVIDIA GeForce RTX 3080 / COSMIC Desktop 実機環境にて、4K デ�
 
 ---
 
+## 🤖 開発手法（Vibe Coding）について
+
+本プロジェクトは、AI との対話を繰り返しながら創り上げられた **Vibe Coding** の生成物です。単なるコード自動生成にとどまらず、以下のプロセスを AI と人間が二人三脚で何度も反復・循環させて開発されました：
+
+- 💡 **アイデア創出 (Ideation)**: Wayland Layer-shell を用いた非破壊壁紙マネージャーの着想や機能要件のブレインストーミング
+- 📝 **技術提案 & 設計 (Proposals & Design)**: 常駐デーモンと GUI の疎結合分離、黒画面なしプリロール切替、IPC 通信プロトコルなどのアーキテクチャ提案
+- 🛠️ **実装 (Implementation)**: Rust によるデーモン、`libcosmic` 設定 GUI、GStreamer / FFmpeg パイプラインの実装とリファクタリング
+- 🔬 **検証 (Verification)**: プロトコル仕様への準拠チェック、メモリ・CPU 使用率のプロファイリング、マルチモニター挙動の確認
+- 🧪 **実機テスト (Testing & Benchmarking)**: COSMIC Desktop / Wayland 実機テストベッドでの動作確認、負荷ベンチマーク計測、エッジケースの不具合修正
+
+---
+
 ## 📄 ライセンス
 
 Fluffy は [MIT License](LICENSE) のもとで公開されています。  
-依存ライブラリや外部ランタイム（GStreamer / FFmpeg）のライセンス境界については [サードパーティライセンス監査記録](legal/THIRD_PARTY_LICENSES.ja.md) をご覧ください。
+外部ランタイムや依存ライブラリのライセンス境界については [サードパーティライセンス監査記録](legal/THIRD_PARTY_LICENSES.ja.md) をご覧ください。
