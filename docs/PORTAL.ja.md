@@ -15,10 +15,14 @@ Fluffy は、Pop!_OS COSMIC Desktop および Linux Wayland コンポジター�
 
 | ドキュメント | 主要テーマ | 対象読者 |
 | :--- | :--- | :--- |
-| **[ルート README](../README.ja.md)** | クイックスタート、インストール手順、機能ハイライト、CLI & GUI 使い方 | 初回導入ユーザーおよびシステム管理者 |
+| **[ルート README](../README.ja.md)** | クイックスタート、基本操作、主なハイライト | 初回導入ユーザーおよび一般利用者 |
+| **[CLI コマンド仕様 (CLI Reference)](CLI.ja.md)** | CLI コマンド構文、オプション詳細、実践コマンド例 | 端末操作メインのユーザー・自動化シェル作成者 |
+| **[設定・状態仕様 (Configuration)](CONFIGURATION.ja.md)** | XDG 設定項目 (`config.json`)、状態ファイル (`state.json`) | 設定調整およびシステム管理者 |
+| **[動画規格 & ストレージ仕様 (Formats & Storage)](STORAGE_AND_FORMATS.ja.md)** | 適合動画規格、自動トランスコード、SHA-256 重複排除ストレージ | 動画作成者・ストレージ管理担当者 |
+| **[デスクトップ & systemd 連携 (Systemd Guide)](SYSTEMD.ja.md)** | 自動インストーラー、systemd `--user` サービス管理 | デスクトップ統合および常駐管理担当者 |
+| **[性能ベンチマーク報告書 (Benchmark Report)](BENCHMARK_REPORT.ja.md)** | 実機実測 CPU%、メモリ RSS、GPU 3D 利用率、NVDEC デコーダ負荷 | パフォーマンスエンジニア、システム最適化担当者 |
 | **[技術仕様書 (Technical Design)](TECHNICAL_DESIGN.ja.md)** | システム全体構造、IPC JSON-RPC 仕様、キャッシュポリシー、Layer-shell 統合 | 開発者、アーキテクト、技術的コントリビューター |
 | **[セッション引継ぎ書 (Session Handover)](SESSION_HANDOVER.ja.md)** | 開発ロードマップ、全フェーズ進捗、実機検証エビデンスマトリクス | 実装継続を担当する開発者 |
-| **[性能ベンチマーク報告書 (Benchmark Report)](BENCHMARK_REPORT.ja.md)** | 実機実測 CPU%、メモリ RSS、GPU 3D 利用率、NVDEC デコーダ負荷 | パフォーマンスエンジニア、システム最適化担当者 |
 | **[知的財産権 (IP) デューデリジェンス記録書](../legal/IP_COMPLIANCE.ja.md)** | アプリアイコンの由来、独自性検証、商標・知的財産権クリアランス記録 | パッケージメンテナ、デスクトップインテグレーター、コントリビューター |
 | **[サードパーティライセンス監査記録](../legal/THIRD_PARTY_LICENSES.ja.md)** | Rust 依存クレート、GStreamer & FFmpeg ランタイムライセンス、下流パッケージング方針 | パッケージャー、法務監査担当者、ディストリビューター |
 | **[アイコン意匠設計・IPレビュー履歴](../legal/ICON_DESIGN_HISTORY.ja.md)** | 4アプリ横断アイコン創出経緯、AI プロンプト履歴、反復監査ログ | メンテナ、リポジトリアーキビスト |
@@ -28,16 +32,15 @@ Fluffy は、Pop!_OS COSMIC Desktop および Linux Wayland コンポジター�
 ## 🎯 目的別ナビゲーション
 
 ### 1. インストールとデスクトップ環境への統合
-- **クイックインストール**: [ルート README: クイックスタート](../README.ja.md#-クイックスタート) を参照してください。
-- **アプリアイコンとデスクトップ意匠**: `images/fluffy-icon.svg` および `data/icons/hicolor/scalable/apps/` にスケーラブル SVG アイコンが配置されています。権利クリアランス詳細は [知的財産権 (IP) デューデリジェンス記録書](../legal/IP_COMPLIANCE.ja.md) を参照してください。
-- **systemd `--user` サービス登録**: `scripts/install-desktop-integration.sh` を実行して、`fluffy.service`、デスクトップエントリ、およびアプリアイコンを自動配置します。
-- **systemctl による運用管理**: [ルート README: デスクトップ導入](../README.ja.md#%EF%B8%8F-デスクトップ--systemd-ユーザーサービス導入) にてコマンド一覧を確認できます。
+- **クイックスタート**: [ルート README: クイックスタート](../README.ja.md#-クイックスタート) を参照してください。
+- **systemd `--user` サービス運用**: [デスクトップ & systemd 連携ガイド](SYSTEMD.ja.md) にてコマンド一覧やサービス設定を確認できます。
+- **アプリアイコンと意匠**: `images/fluffy-icon.svg` および `data/icons/` にスケーラブル SVG アイコンが配置されています。権利クリアランス詳細は [知的財産権 (IP) デューデリジェンス記録書](../legal/IP_COMPLIANCE.ja.md) を参照してください。
 
-### 2. CLI および GUI からの壁紙操作
-- **CLI コマンド一覧**: [ルート README: CLI コマンド仕様](../README.ja.md#-cli-コマンド仕様) にて `fluffy set-video`, `fluffy pause`, `fluffy resume`, `fluffy stop`, `fluffy status` の利用法を確認できます。
-- **GUI による直感操作**: `fluffy-settings` を起動して、対象ディスプレイの選択、動画ファイルの参照、適用をマウス操作で行えます。変換中は回転アニメーションインジケータが表示されます。
-- **動画フォーマット適合規格**: [ルート README: 動画フォーマット適合規格](../README.ja.md#-動画フォーマット適合規格とストレージ仕様) にて、即時再生できる適合規格（H.264/yuv420p/30fps）と、初回バックグラウンド変換の仕様を確認できます。
-- **永続ストレージ (`~/.local/share/fluffy/storage`)**: 変換済みおよび適合動画は永続ストレージに保存され、ユーザーが明示的に削除するまで恒久保持されます。
+### 2. 壁紙の操作と設定
+- **CLI コマンド詳細**: [CLI コマンド仕様](CLI.ja.md) にて全コマンド・オプションおよび実用ワンライナーを確認できます。
+- **GUI による直感操作**: `fluffy-settings` を起動して、対象ディスプレイの選択、動画ファイルの参照、適用をマウス操作で行えます。
+- **設定ファイル・状態保存**: [設定・状態仕様](CONFIGURATION.ja.md) にて `~/.config/fluffy/config.json` および `state.json` の仕様を確認できます。
+- **動画フォーマット適合規格**: [動画規格 & ストレージ仕様](STORAGE_AND_FORMATS.ja.md) にて、即時再生できる適合規格（H.264/yuv420p/30fps）と、初回バックグラウンド変換の仕様を確認できます。
 
 ### 3. アーキテクチャとプロトコルの詳細理解
 - **非破壊オーバーレイ共存モデル**: [TECHNICAL_DESIGN.ja.md: セクション 3 & 4](TECHNICAL_DESIGN.ja.md) を参照し、`cosmic-bg` と干渉せず `Layer::Bottom` で描画・復帰する仕組みを理解できます。

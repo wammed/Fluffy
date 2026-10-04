@@ -15,10 +15,14 @@ Use this portal to navigate specifications, architecture design records, benchma
 
 | Document | Primary Topics | Recommended Audience |
 | :--- | :--- | :--- |
-| **[Root README](../README.md)** | Quick start, installation, feature highlights, basic CLI & GUI usage | First-time users and operators installing Fluffy |
+| **[Root README](../README.md)** | Quick start, highlights, basic usage summary | First-time users and operators installing Fluffy |
+| **[CLI Reference](CLI.md)** | CLI syntax, command options, practical commands | Shell users, script authors, power users |
+| **[Configuration Specifications](CONFIGURATION.md)** | XDG config keys (`config.json`), state file (`state.json`) | Administrators and power users configuring options |
+| **[Video Formats & Storage](STORAGE_AND_FORMATS.md)** | Compliant specs, auto-transcoding, SHA-256 deduplicated storage | Content creators, operators managing video files |
+| **[Desktop & systemd Guide](SYSTEMD.md)** | Automated desktop integration, systemd user service management | Desktop integrators and service administrators |
+| **[Performance Benchmark Report](BENCHMARK_REPORT.md)** | Real-hardware CPU, RSS RAM, GPU 3D, and NVDEC decoder metrics | Performance engineers and desktop integrators |
 | **[Technical Design Document](TECHNICAL_DESIGN.md)** | System architecture, IPC JSON-RPC protocol, cache rules, layer-shell integration | Developers, architects, and technical contributors |
 | **[Session Handover & Progress](SESSION_HANDOVER.md)** | Engineering roadmap, phase completion status, hardware verification matrix | Developers continuing project implementation |
-| **[Performance Benchmark Report](BENCHMARK_REPORT.md)** | Real-hardware CPU, RSS RAM, GPU 3D, and NVDEC decoder metrics across resolutions | Performance engineers and desktop integrators |
 | **[Icon Design & IP Compliance](../legal/IP_COMPLIANCE.md)** | Icon provenance, design audit, and trademark / IP clearance verification | Package maintainers, desktop integrators, and contributors |
 | **[Third-Party Licenses](../legal/THIRD_PARTY_LICENSES.md)** | Rust dependencies, GStreamer & FFmpeg runtime licensing, downstream packaging obligations | Downstream packagers, legal auditors, and distributors |
 | **[Icon Design & IP Review History](../legal/ICON_DESIGN_HISTORY.md)** | Multi-app icon genesis, AI prompt history, and iterative audit logs | Maintainers and archivists |
@@ -29,15 +33,14 @@ Use this portal to navigate specifications, architecture design records, benchma
 
 ### 1. Installation & Desktop Integration
 - **Quick Installation**: Follow the [Quick Start](../README.md#-quick-start) in the root README.
-- **Application Icon & Desktop Branding**: Scalable SVG icons are located in `images/fluffy-icon.svg` and `data/icons/hicolor/scalable/apps/`. Review [Icon Design & IP Compliance](../legal/IP_COMPLIANCE.md) for provenance details.
-- **systemd `--user` Service**: Run `scripts/install-desktop-integration.sh` to install `fluffy.service`, desktop entry, and application icons.
-- **Managing via systemctl**: Learn service lifecycle management in [Root README: Desktop Setup](../README.md#%EF%B8%8F-desktop--systemd-user-service-setup).
+- **Desktop & systemd Integration**: Read the [Desktop & systemd Setup Guide](SYSTEMD.md) for service control and auto-installer details.
+- **Application Icon & Branding**: Scalable SVG icons are located in `images/fluffy-icon.svg` and `data/icons/`. Review [Icon Design & IP Compliance](../legal/IP_COMPLIANCE.md) for provenance details.
 
-### 2. Controlling Playback via CLI & GUI
-- **CLI Commands**: See [Root README: CLI Usage](../README.md#-cli-usage) for `fluffy set-video`, `fluffy pause`, `fluffy resume`, `fluffy stop`, and `fluffy status`.
-- **GUI Control**: Launch `fluffy-settings` to visually select target monitors, browse videos, and apply live wallpapers. An animated indicator displays during normalization.
-- **Video Specifications**: Review [Root README: Video Specifications](../README.md#-video-specifications--persistent-storage) for details on zero-CPU compliant profiles (H.264/yuv420p/30fps) and non-blocking background normalization.
-- **Persistent Storage (`~/.local/share/fluffy/storage`)**: Wallpapers are kept in persistent storage until explicitly deleted.
+### 2. Playback Control & Configuration
+- **CLI Commands**: Read the [CLI Reference](CLI.md) for full syntax, flags, and workflow examples.
+- **GUI Control**: Launch `fluffy-settings` to visually select monitors, browse videos, and apply live wallpapers.
+- **Configuration & States**: Read [Configuration Specifications](CONFIGURATION.md) for details on `~/.config/fluffy/config.json` and state files.
+- **Video Specifications**: Review [Video Formats & Storage](STORAGE_AND_FORMATS.md) for details on compliant profiles (H.264/yuv420p/30fps) and non-blocking background normalization.
 
 ### 3. Understanding the Architecture & Protocols
 - **Non-Destructive Overlay Model**: Read [TECHNICAL_DESIGN.md: Section 3 & 4](TECHNICAL_DESIGN.md#3-core-architecture) to understand how Fluffy renders on `Layer::Bottom` without interfering with `cosmic-bg`.
