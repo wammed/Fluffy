@@ -141,12 +141,55 @@ impl GstVideoPlayer {
             );
 
             // Transition to Paused so preroll renders the first frame into waylandsink subsurface
+            let paused_start = std::time::Instant::now();
+            tracing::info!(
+                event = "pipeline_set_paused_started",
+                output = %output,
+                generation = generation,
+                video_id = %video_id,
+                session_id = %sid,
+                "[Player] Setting new pipeline state to PAUSED started"
+            );
+
             new_handle.pipeline.set_state(gstreamer::State::Paused)?;
 
+            let paused_elapsed_ms = paused_start.elapsed().as_secs_f64() * 1000.0;
+            tracing::info!(
+                event = "pipeline_set_paused_returned",
+                output = %output,
+                generation = generation,
+                video_id = %video_id,
+                session_id = %sid,
+                elapsed_ms = paused_elapsed_ms,
+                "[Player] Setting new pipeline state to PAUSED returned"
+            );
+
             // Wait for preroll to complete (first frame is committed to the compositor)
+            let preroll_start = std::time::Instant::now();
+            tracing::info!(
+                event = "preroll_wait_started",
+                output = %output,
+                generation = generation,
+                video_id = %video_id,
+                session_id = %sid,
+                "[Player] Waiting for new pipeline preroll started"
+            );
+
             let (state_change_res, current_st, pending_st) = new_handle
                 .pipeline
                 .state(gstreamer::ClockTime::from_mseconds(500));
+
+            let preroll_elapsed_ms = preroll_start.elapsed().as_secs_f64() * 1000.0;
+            tracing::info!(
+                event = "preroll_wait_returned",
+                output = %output,
+                generation = generation,
+                video_id = %video_id,
+                session_id = %sid,
+                elapsed_ms = preroll_elapsed_ms,
+                "[Player] Waiting for new pipeline preroll returned"
+            );
+
             tracing::debug!(
                 operation = "preroll",
                 res = ?state_change_res,
@@ -187,7 +230,28 @@ impl GstVideoPlayer {
             );
 
             // Now transition new pipeline to Playing
+            let playing_start = std::time::Instant::now();
+            tracing::info!(
+                event = "pipeline_set_playing_started",
+                output = %output,
+                generation = generation,
+                video_id = %video_id,
+                session_id = %sid,
+                "[Player] Setting new pipeline state to PLAYING started"
+            );
+
             new_handle.pipeline.set_state(gstreamer::State::Playing)?;
+
+            let playing_elapsed_ms = playing_start.elapsed().as_secs_f64() * 1000.0;
+            tracing::info!(
+                event = "pipeline_set_playing_returned",
+                output = %output,
+                generation = generation,
+                video_id = %video_id,
+                session_id = %sid,
+                elapsed_ms = playing_elapsed_ms,
+                "[Player] Setting new pipeline state to PLAYING returned"
+            );
 
             tracing::debug!(
                 event = "pipeline_playing",
