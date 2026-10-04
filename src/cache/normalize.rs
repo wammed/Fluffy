@@ -265,13 +265,13 @@ mod tests {
         assert!(fs::metadata(&out_file).unwrap().len() > 0);
 
         // Verify output duration is trimmed by ~1.0s (4.0s - 1.0s = 3.0s)
-        if let Ok(out_probe) = crate::cache::probe::probe_video(&out_file) {
-            if let Some(dur) = out_probe.duration_secs {
-                assert!(
-                    dur >= 2.8 && dur <= 3.2,
-                    "Expected duration ~3.0s, got {dur}"
-                );
-            }
+        if let Ok(out_probe) = crate::cache::probe::probe_video(&out_file)
+            && let Some(dur) = out_probe.duration_secs
+        {
+            assert!(
+                (2.8..=3.2).contains(&dur),
+                "Expected duration ~3.0s, got {dur}"
+            );
         }
 
         let _ = fs::remove_file(&in_file);

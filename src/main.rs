@@ -349,13 +349,8 @@ fn cmd_import(path: &Path, crossfade_ms: Option<u32>) -> Result<()> {
     }
 
     let config = FluffyConfig::load();
-    let effective_crossfade = crossfade_ms.or_else(|| {
-        if config.startup_and_wallpaper.loop_crossfade_ms > 0 {
-            Some(config.startup_and_wallpaper.loop_crossfade_ms)
-        } else {
-            None
-        }
-    });
+    let effective_crossfade = crossfade_ms.or((config.startup_and_wallpaper.loop_crossfade_ms > 0)
+        .then_some(config.startup_and_wallpaper.loop_crossfade_ms));
 
     println!(
         "[Import] Validating and importing to persistent storage (crossfade: {:?}): {:?}",
