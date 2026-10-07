@@ -187,6 +187,9 @@ impl GstVideoPlayer {
                 video_id = %video_id,
                 session_id = %sid,
                 elapsed_ms = preroll_elapsed_ms,
+                state_change_res = ?state_change_res,
+                current_st = ?current_st,
+                pending_st = ?pending_st,
                 "[Player] Waiting for new pipeline preroll returned"
             );
 
