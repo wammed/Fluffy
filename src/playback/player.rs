@@ -140,6 +140,34 @@ impl GstVideoPlayer {
                 "[Player] New pipeline preroll started"
             );
 
+            enum GstPrerollEventKind {
+                AsyncStart,
+                AsyncDone,
+                StateChanged {
+                    old: gstreamer::State,
+                    current: gstreamer::State,
+                    pending: gstreamer::State,
+                },
+                Error {
+                    error: String,
+                    debug_info: Option<String>,
+                },
+            }
+
+            struct GstPrerollEvent {
+                elapsed_ms: f64,
+                src: String,
+                kind: GstPrerollEventKind,
+            }
+
+            struct BusSyncHandlerGuard<'a>(&'a gstreamer::Bus);
+
+            impl Drop for BusSyncHandlerGuard<'_> {
+                fn drop(&mut self) {
+                    self.0.unset_sync_handler();
+                }
+            }
+
             // Transition to Paused so preroll renders the first frame into waylandsink subsurface
             let paused_start = std::time::Instant::now();
             tracing::info!(
@@ -150,6 +178,79 @@ impl GstVideoPlayer {
                 session_id = %sid,
                 "[Player] Setting new pipeline state to PAUSED started"
             );
+
+            let recorded_events = std::sync::Arc::new(std::sync::Mutex::new(
+                Vec::<GstPrerollEvent>::with_capacity(16),
+            ));
+            let events_cb = recorded_events.clone();
+            let p_ref = new_handle.pipeline.clone();
+            let s_ref = new_handle.sink.clone();
+
+            new_handle.bus.set_sync_handler(move |_bus, msg| {
+                use gstreamer::MessageView;
+
+                let is_pipeline = msg.src() == Some(p_ref.upcast_ref());
+                let is_sink = msg.src() == Some(s_ref.upcast_ref());
+
+                let event_opt = match msg.view() {
+                    MessageView::AsyncStart(..) if is_pipeline || is_sink => {
+                        Some(GstPrerollEvent {
+                            elapsed_ms: paused_start.elapsed().as_secs_f64() * 1000.0,
+                            src: if is_pipeline {
+                                "pipeline".to_string()
+                            } else {
+                                "waylandsink".to_string()
+                            },
+                            kind: GstPrerollEventKind::AsyncStart,
+                        })
+                    }
+                    MessageView::AsyncDone(..) if is_pipeline || is_sink => Some(GstPrerollEvent {
+                        elapsed_ms: paused_start.elapsed().as_secs_f64() * 1000.0,
+                        src: if is_pipeline {
+                            "pipeline".to_string()
+                        } else {
+                            "waylandsink".to_string()
+                        },
+                        kind: GstPrerollEventKind::AsyncDone,
+                    }),
+                    MessageView::StateChanged(sc) if is_pipeline || is_sink => {
+                        Some(GstPrerollEvent {
+                            elapsed_ms: paused_start.elapsed().as_secs_f64() * 1000.0,
+                            src: if is_pipeline {
+                                "pipeline".to_string()
+                            } else {
+                                "waylandsink".to_string()
+                            },
+                            kind: GstPrerollEventKind::StateChanged {
+                                old: sc.old(),
+                                current: sc.current(),
+                                pending: sc.pending(),
+                            },
+                        })
+                    }
+                    MessageView::Error(err) => Some(GstPrerollEvent {
+                        elapsed_ms: paused_start.elapsed().as_secs_f64() * 1000.0,
+                        src: msg
+                            .src()
+                            .map(|s| s.name().to_string())
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        kind: GstPrerollEventKind::Error {
+                            error: err.error().to_string(),
+                            debug_info: err.debug().map(|d| d.to_string()),
+                        },
+                    }),
+                    _ => None,
+                };
+
+                if let Some(ev) = event_opt {
+                    if let Ok(mut lock) = events_cb.lock() {
+                        lock.push(ev);
+                    }
+                }
+
+                gstreamer::BusSyncReply::Pass
+            });
+            let sync_guard = BusSyncHandlerGuard(&new_handle.bus);
 
             new_handle.pipeline.set_state(gstreamer::State::Paused)?;
 
@@ -192,6 +293,70 @@ impl GstVideoPlayer {
                 pending_st = ?pending_st,
                 "[Player] Waiting for new pipeline preroll returned"
             );
+
+            // Disarm sync handler before flushing recorded events
+            drop(sync_guard);
+
+            // Emit structured events recorded during PAUSED transition & preroll
+            if let Ok(mut events) = recorded_events.lock() {
+                for ev in events.drain(..) {
+                    match ev.kind {
+                        GstPrerollEventKind::AsyncStart => {
+                            tracing::info!(
+                                event = "gst_sync_async_start",
+                                output = %output,
+                                generation = generation,
+                                session_id = %sid,
+                                elapsed_ms = ev.elapsed_ms,
+                                src = %ev.src,
+                                "[Player] GStreamer sync event: ASYNC_START"
+                            );
+                        }
+                        GstPrerollEventKind::AsyncDone => {
+                            tracing::info!(
+                                event = "gst_sync_async_done",
+                                output = %output,
+                                generation = generation,
+                                session_id = %sid,
+                                elapsed_ms = ev.elapsed_ms,
+                                src = %ev.src,
+                                "[Player] GStreamer sync event: ASYNC_DONE"
+                            );
+                        }
+                        GstPrerollEventKind::StateChanged {
+                            old,
+                            current,
+                            pending,
+                        } => {
+                            tracing::info!(
+                                event = "gst_sync_state_changed",
+                                output = %output,
+                                generation = generation,
+                                session_id = %sid,
+                                elapsed_ms = ev.elapsed_ms,
+                                src = %ev.src,
+                                old_state = ?old,
+                                current_state = ?current,
+                                pending_state = ?pending,
+                                "[Player] GStreamer sync event: STATE_CHANGED"
+                            );
+                        }
+                        GstPrerollEventKind::Error { error, debug_info } => {
+                            tracing::error!(
+                                event = "gst_sync_error",
+                                output = %output,
+                                generation = generation,
+                                session_id = %sid,
+                                elapsed_ms = ev.elapsed_ms,
+                                src = %ev.src,
+                                error = %error,
+                                debug = ?debug_info,
+                                "[Player] GStreamer sync event: ERROR"
+                            );
+                        }
+                    }
+                }
+            }
 
             tracing::debug!(
                 operation = "preroll",
