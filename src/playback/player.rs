@@ -170,7 +170,8 @@ impl GstVideoPlayer {
             }
 
             struct GstPrerollEvent {
-                elapsed_ms: f64,
+                stage_elapsed_ms: f64,
+                total_elapsed_ms: f64,
                 src: String,
                 kind: GstPrerollEventKind,
             }
@@ -210,9 +211,13 @@ impl GstVideoPlayer {
                 let is_pipeline = msg.src() == Some(p_ref.upcast_ref());
                 let is_sink = msg.src() == Some(s_ref.upcast_ref());
 
+                let stage_elapsed_ms = paused_start.elapsed().as_secs_f64() * 1000.0;
+                let total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0;
+
                 let event_opt = match msg.view() {
                     MessageView::AsyncStart(..) => Some(GstPrerollEvent {
-                        elapsed_ms: paused_start.elapsed().as_secs_f64() * 1000.0,
+                        stage_elapsed_ms,
+                        total_elapsed_ms,
                         src: if is_pipeline {
                             "pipeline".to_string()
                         } else if is_sink {
@@ -225,7 +230,8 @@ impl GstVideoPlayer {
                         kind: GstPrerollEventKind::AsyncStart,
                     }),
                     MessageView::AsyncDone(..) => Some(GstPrerollEvent {
-                        elapsed_ms: paused_start.elapsed().as_secs_f64() * 1000.0,
+                        stage_elapsed_ms,
+                        total_elapsed_ms,
                         src: if is_pipeline {
                             "pipeline".to_string()
                         } else if is_sink {
@@ -241,7 +247,8 @@ impl GstVideoPlayer {
                         // Record all transitions of pipeline and sink, and Paused transitions of internal elements
                         if is_pipeline || is_sink || sc.current() == gstreamer::State::Paused {
                             Some(GstPrerollEvent {
-                                elapsed_ms: paused_start.elapsed().as_secs_f64() * 1000.0,
+                                stage_elapsed_ms,
+                                total_elapsed_ms,
                                 src: if is_pipeline {
                                     "pipeline".to_string()
                                 } else if is_sink {
@@ -262,7 +269,8 @@ impl GstVideoPlayer {
                         }
                     }
                     MessageView::Error(err) => Some(GstPrerollEvent {
-                        elapsed_ms: paused_start.elapsed().as_secs_f64() * 1000.0,
+                        stage_elapsed_ms,
+                        total_elapsed_ms,
                         src: msg
                             .src()
                             .map(|s| s.name().to_string())
@@ -351,8 +359,8 @@ impl GstVideoPlayer {
                                 generation = generation,
                                 session_id = %sid,
                                 epoch_ms,
-                                stage_elapsed_ms = ev.elapsed_ms,
-                                total_elapsed_ms = paused_start.elapsed().as_secs_f64() * 1000.0,
+                                stage_elapsed_ms = ev.stage_elapsed_ms,
+                                total_elapsed_ms = ev.total_elapsed_ms,
                                 src = %ev.src,
                                 "[Player] GStreamer sync event: ASYNC_START"
                             );
@@ -365,8 +373,8 @@ impl GstVideoPlayer {
                                 generation = generation,
                                 session_id = %sid,
                                 epoch_ms,
-                                stage_elapsed_ms = ev.elapsed_ms,
-                                total_elapsed_ms = paused_start.elapsed().as_secs_f64() * 1000.0,
+                                stage_elapsed_ms = ev.stage_elapsed_ms,
+                                total_elapsed_ms = ev.total_elapsed_ms,
                                 src = %ev.src,
                                 "[Player] GStreamer sync event: ASYNC_DONE"
                             );
@@ -383,8 +391,8 @@ impl GstVideoPlayer {
                                 generation = generation,
                                 session_id = %sid,
                                 epoch_ms,
-                                stage_elapsed_ms = ev.elapsed_ms,
-                                total_elapsed_ms = paused_start.elapsed().as_secs_f64() * 1000.0,
+                                stage_elapsed_ms = ev.stage_elapsed_ms,
+                                total_elapsed_ms = ev.total_elapsed_ms,
                                 src = %ev.src,
                                 old_state = ?old,
                                 current_state = ?current,
@@ -400,8 +408,8 @@ impl GstVideoPlayer {
                                 generation = generation,
                                 session_id = %sid,
                                 epoch_ms,
-                                stage_elapsed_ms = ev.elapsed_ms,
-                                total_elapsed_ms = paused_start.elapsed().as_secs_f64() * 1000.0,
+                                stage_elapsed_ms = ev.stage_elapsed_ms,
+                                total_elapsed_ms = ev.total_elapsed_ms,
                                 src = %ev.src,
                                 error = %error,
                                 debug = ?debug_info,
@@ -544,6 +552,7 @@ impl GstVideoPlayer {
                     total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
                     "[Player] Old pipeline set_state(NULL) returned (API returned; internal resources may still be releasing asynchronously)"
                 );
+                let teardown_total_elapsed_ms = teardown_start.elapsed().as_secs_f64() * 1000.0;
                 tracing::info!(
                     event = "old_pipeline_teardown_completed",
                     switch_id = %switch_id,
@@ -551,17 +560,17 @@ impl GstVideoPlayer {
                     generation = old_generation,
                     session_id = %sid,
                     epoch_ms,
-                    stage_elapsed_ms = set_null_elapsed_ms,
+                    stage_elapsed_ms = teardown_total_elapsed_ms,
                     total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
                     "[Player] Old pipeline teardown completed"
                 );
 
-                // Explicitly time the destruction of old PipelineHandle (unref of playbin, elements, threads join)
+                // Explicitly time the destruction of old PipelineHandle in Rust
                 let drop_start = std::time::Instant::now();
                 drop(old);
                 let drop_elapsed_ms = drop_start.elapsed().as_secs_f64() * 1000.0;
                 tracing::info!(
-                    event = "old_pipeline_resources_released",
+                    event = "old_pipeline_rust_drop_completed",
                     switch_id = %switch_id,
                     output = %output,
                     generation = old_generation,
@@ -569,7 +578,7 @@ impl GstVideoPlayer {
                     epoch_ms,
                     stage_elapsed_ms = drop_elapsed_ms,
                     total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
-                    "[Player] Old pipeline GStreamer resources fully unrefed & joined"
+                    "[Player] Old pipeline Rust handle drop completed (C unrefs and thread joins; internal OS/driver resources may still release asynchronously)"
                 );
             }
 

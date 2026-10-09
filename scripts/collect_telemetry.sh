@@ -16,13 +16,28 @@ echo "=== Starting high-resolution telemetry collectors for PID $PID ==="
 echo "Output directory: $OUT_DIR"
 
 # 1. GPU Telemetry via nvidia-smi (100ms sampling)
+NVIDIA_PID=""
 if command -v nvidia-smi >/dev/null 2>&1; then
-    nvidia-smi --query-gpu=timestamp,utilization.gpu,utilization.memory,utilization.decoder,memory.used,memory.free,temperature.gpu,power.draw \
-        --format=csv -lms 100 > "$OUT_DIR/gpu_telemetry.csv" 2>/dev/null &
-    NVIDIA_PID=$!
-    echo "Started nvidia-smi collector (PID $NVIDIA_PID)"
+    # Test high-detail query first
+    DETAIL_QUERY="timestamp,utilization.gpu,utilization.memory,utilization.decoder,memory.used,memory.free,temperature.gpu,power.draw"
+    BASIC_QUERY="timestamp,utilization.gpu,utilization.memory,memory.used,memory.free"
+
+    if nvidia-smi --query-gpu="${DETAIL_QUERY}" --format=csv,noheader -i 0 >/dev/null 2>"$OUT_DIR/nvidia_check.err"; then
+        QUERY="${DETAIL_QUERY}"
+    elif nvidia-smi --query-gpu="${BASIC_QUERY}" --format=csv,noheader -i 0 >/dev/null 2>"$OUT_DIR/nvidia_check.err"; then
+        QUERY="${BASIC_QUERY}"
+        echo "nvidia-smi: using basic metrics fallback"
+    else
+        QUERY=""
+        echo "nvidia-smi: query not supported on this device; see $OUT_DIR/nvidia_check.err"
+    fi
+
+    if [ -n "$QUERY" ]; then
+        nvidia-smi --query-gpu="${QUERY}" --format=csv -lms 100 > "$OUT_DIR/gpu_telemetry.csv" 2>"$OUT_DIR/gpu_telemetry.err" &
+        NVIDIA_PID=$!
+        echo "Started nvidia-smi collector (PID $NVIDIA_PID)"
+    fi
 else
-    NVIDIA_PID=""
     echo "nvidia-smi not found; skipping GPU telemetry"
 fi
 
@@ -32,15 +47,22 @@ cleanup() {
     if [ -n "$NVIDIA_PID" ] && kill -0 "$NVIDIA_PID" 2>/dev/null; then
         kill "$NVIDIA_PID" 2>/dev/null || true
     fi
+    echo "END_EPOCH_MS=$(date +%s%3N)" >> "$OUT_DIR/telemetry_meta.txt"
 }
 trap cleanup EXIT INT TERM
 
 echo "timestamp,epoch_ms,utime_ticks,stime_ticks,rss_pages,threads" > "$OUT_DIR/proc_telemetry.csv"
 
-# Record system page size and tick rate
+# Record system page size, tick rate and time boundaries
 CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 PAGE_SIZE=$(getconf PAGESIZE 2>/dev/null || echo 4096)
-echo "CLK_TCK=$CLK_TCK,PAGE_SIZE=$PAGE_SIZE" > "$OUT_DIR/telemetry_meta.txt"
+START_EPOCH_MS=$(date +%s%3N)
+cat <<EOF > "$OUT_DIR/telemetry_meta.txt"
+TARGET_PID=$PID
+START_EPOCH_MS=$START_EPOCH_MS
+CLK_TCK=$CLK_TCK
+PAGE_SIZE=$PAGE_SIZE
+EOF
 
 while kill -0 "$PID" 2>/dev/null; do
     NOW_EPOCH=$(date +%s%3N)
