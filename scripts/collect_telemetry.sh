@@ -43,11 +43,13 @@ fi
 
 # 2. Process CPU/Memory Telemetry via /proc (100ms sampling)
 cleanup() {
+    trap - EXIT INT TERM
     echo "Stopping telemetry collectors..."
     if [ -n "$NVIDIA_PID" ] && kill -0 "$NVIDIA_PID" 2>/dev/null; then
         kill "$NVIDIA_PID" 2>/dev/null || true
     fi
     echo "END_EPOCH_MS=$(date +%s%3N)" >> "$OUT_DIR/telemetry_meta.txt"
+    exit 0
 }
 trap cleanup EXIT INT TERM
 

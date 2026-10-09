@@ -127,6 +127,18 @@ sleep 0.5
 if kill -0 "${TELEMETRY_PID}" 2>/dev/null; then
     kill "${TELEMETRY_PID}" 2>/dev/null || true
 fi
+
+# Wait up to 3 seconds for telemetry process to terminate cleanly
+for _ in {1..30}; do
+    if ! kill -0 "${TELEMETRY_PID}" 2>/dev/null; then
+        break
+    fi
+    sleep 0.1
+done
+if kill -0 "${TELEMETRY_PID}" 2>/dev/null; then
+    echo "  Force killing lingering telemetry collector..."
+    kill -9 "${TELEMETRY_PID}" 2>/dev/null || true
+fi
 wait "${TELEMETRY_PID}" 2>/dev/null || true
 
 # If daemon was started by us, capture and stop it
