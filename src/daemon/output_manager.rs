@@ -402,12 +402,19 @@ impl OutputManager {
 
             let old_gen = out.generation;
             out.generation = target_gen;
+            let switch_id = format!("{}-{}-gen{}", sid, target, target_gen);
+            let epoch_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
             tracing::info!(
                 event = "video_switch_requested",
+                switch_id = %switch_id,
                 output = %target,
                 generation = target_gen,
                 video_id = %video_id,
                 session_id = %sid,
+                epoch_ms,
                 "[OutputManager] Video switch requested"
             );
             match out
@@ -415,6 +422,19 @@ impl OutputManager {
                 .play_with_generation(video_path, target_gen, old_gen)
             {
                 Ok(()) => {
+                    tracing::info!(
+                        event = "video_switch_completed",
+                        switch_id = %switch_id,
+                        output = %target,
+                        generation = target_gen,
+                        session_id = %sid,
+                        epoch_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                        success = true,
+                        "[OutputManager] Video switch completed successfully"
+                    );
                     apply_results.push(OutputApplyResult {
                         name: target.to_string(),
                         success: true,
@@ -422,6 +442,20 @@ impl OutputManager {
                     });
                 }
                 Err(e) => {
+                    tracing::warn!(
+                        event = "video_switch_completed",
+                        switch_id = %switch_id,
+                        output = %target,
+                        generation = target_gen,
+                        session_id = %sid,
+                        epoch_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                        success = false,
+                        error = %e,
+                        "[OutputManager] Video switch failed"
+                    );
                     apply_results.push(OutputApplyResult {
                         name: target.to_string(),
                         success: false,
@@ -435,12 +469,19 @@ impl OutputManager {
             for (name, out) in self.outputs.iter_mut() {
                 let old_gen = out.generation;
                 out.generation = target_gen;
+                let switch_id = format!("{}-{}-gen{}", sid, name, target_gen);
+                let epoch_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
                 tracing::info!(
                     event = "video_switch_requested",
+                    switch_id = %switch_id,
                     output = %name,
                     generation = target_gen,
                     video_id = %video_id,
                     session_id = %sid,
+                    epoch_ms,
                     "[OutputManager] Video switch requested"
                 );
                 match out
@@ -448,6 +489,19 @@ impl OutputManager {
                     .play_with_generation(video_path, target_gen, old_gen)
                 {
                     Ok(()) => {
+                        tracing::info!(
+                            event = "video_switch_completed",
+                            switch_id = %switch_id,
+                            output = %name,
+                            generation = target_gen,
+                            session_id = %sid,
+                            epoch_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64,
+                            success = true,
+                            "[OutputManager] Video switch completed successfully"
+                        );
                         any_success = true;
                         apply_results.push(OutputApplyResult {
                             name: name.clone(),
@@ -457,8 +511,18 @@ impl OutputManager {
                     }
                     Err(e) => {
                         tracing::warn!(
-                            "[OutputManager] Failed to set video on output '{}': {e}",
-                            name
+                            event = "video_switch_completed",
+                            switch_id = %switch_id,
+                            output = %name,
+                            generation = target_gen,
+                            session_id = %sid,
+                            epoch_ms = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64,
+                            success = false,
+                            error = %e,
+                            "[OutputManager] Video switch failed"
                         );
                         apply_results.push(OutputApplyResult {
                             name: name.clone(),
