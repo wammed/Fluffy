@@ -7,6 +7,12 @@ REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SESSION_TAG=$(date +"%Y%m%d_%H%M%S")
 BENCH_DIR="${REPO_DIR}/target/benchmarks/${SESSION_TAG}"
+
+# Prevent output directory collisions
+if [[ -d "${BENCH_DIR}" ]]; then
+    SESSION_TAG="${SESSION_TAG}_${RANDOM}"
+    BENCH_DIR="${REPO_DIR}/target/benchmarks/${SESSION_TAG}"
+fi
 mkdir -p "${BENCH_DIR}"
 
 echo "========================================================"
@@ -20,12 +26,6 @@ echo "[1/6] Checking Fluffy daemon and environment..."
 SWITCH_COUNT="${1:-8}"
 VIDEO_A="${2:-${REPO_DIR}/test.mp4}"
 VIDEO_B="${3:-${REPO_DIR}/test2.mp4}"
-
-# Prevent output directory collisions
-if [[ -d "${BENCH_DIR}" ]]; then
-    BENCH_DIR="${BENCH_DIR}_${RANDOM}"
-    mkdir -p "${BENCH_DIR}"
-fi
 
 # Prefer release binary for accurate performance benchmarking
 if [[ -n "${FLUFFY_BIN_OVERRIDE:-}" ]] && [[ -x "${FLUFFY_BIN_OVERRIDE}" ]]; then
