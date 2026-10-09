@@ -6,6 +6,7 @@ Includes offline self-test functionality (--test).
 """
 
 import sys
+import os
 import re
 import csv
 import io
@@ -126,15 +127,17 @@ def analyze_switches(events_by_switch, output_csv=None):
 
         def get_ms(ev_dict, key='stage_elapsed_ms'):
             if not ev_dict:
-                return 0.0
+                return None
             val = ev_dict.get(key)
             if val is None and key == 'stage_elapsed_ms':
                 val = ev_dict.get('elapsed_ms')
+            if val is None:
+                return None
             try:
-                return float(val) if val is not None else 0.0
+                return float(val)
             except ValueError:
                 validation_warnings.append(f"Switch '{switch_id}' cannot parse {key}: {val}")
-                return 0.0
+                return None
 
         # Stage timings
         create_ms = get_ms(ev_map.get('new_pipeline_preroll_started'))
@@ -164,17 +167,19 @@ def analyze_switches(events_by_switch, output_csv=None):
                     element_paused.append((src, stage_el))
 
         set_playing_ms = get_ms(ev_map.get('pipeline_set_playing_returned'))
-        old_teardown_ms = get_ms(ev_map.get('old_pipeline_set_null_returned'))
+        old_teardown_ms = get_ms(ev_map.get('old_pipeline_teardown_completed'))
+        if old_teardown_ms is None:
+            old_teardown_ms = get_ms(ev_map.get('old_pipeline_set_null_returned'))
 
         # Support old_pipeline_rust_drop_completed, old_pipeline_handle_dropped, and old_pipeline_resources_released
-        old_drop_ms = (
-            get_ms(ev_map.get('old_pipeline_rust_drop_completed'))
-            or get_ms(ev_map.get('old_pipeline_handle_dropped'))
-            or get_ms(ev_map.get('old_pipeline_resources_released'))
-        )
+        old_drop_ms = get_ms(ev_map.get('old_pipeline_rust_drop_completed'))
+        if old_drop_ms is None:
+            old_drop_ms = get_ms(ev_map.get('old_pipeline_handle_dropped'))
+        if old_drop_ms is None:
+            old_drop_ms = get_ms(ev_map.get('old_pipeline_resources_released'))
 
         total_ms = get_ms(ev_map.get('playback_started'), key='total_elapsed_ms')
-        if total_ms == 0.0:
+        if total_ms is None:
             total_ms = get_ms(ev_map.get('playback_started'))
 
         # Validation & Status check
@@ -205,8 +210,8 @@ def analyze_switches(events_by_switch, output_csv=None):
             'status': status,
             'create_ms': create_ms,
             'set_paused_ms': set_paused_ms,
-            'sink_paused_ms': sink_paused_ms if sink_paused_ms is not None else 0.0,
-            'gst_async_done_ms': async_done_ms if async_done_ms is not None else 0.0,
+            'sink_paused_ms': sink_paused_ms,
+            'gst_async_done_ms': async_done_ms,
             'preroll_wait_ms': preroll_wait_ms,
             'preroll_res': preroll_res,
             'set_playing_ms': set_playing_ms,
@@ -227,7 +232,16 @@ def analyze_switches(events_by_switch, output_csv=None):
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             for r in results:
-                writer.writerow(r)
+                row = {}
+                for k in fieldnames:
+                    val = r.get(k)
+                    if isinstance(val, float):
+                        row[k] = f"{val:.2f}"
+                    elif val is None:
+                        row[k] = ""
+                    else:
+                        row[k] = val
+                writer.writerow(row)
         print(f"Summary CSV exported to: {output_csv}")
 
     return results, validation_warnings
@@ -245,17 +259,22 @@ def print_summary_table(results, unassociated_events, unparseable_lines, validat
     print(header)
     print("-" * len(header))
 
+    def fmt_ms(val, width):
+        if val is None:
+            return f"{'N/A':>{width}}"
+        return f"{val:>{width-1}.2f}m"
+
     for r in results:
         print(
             f"{r['switch_id']:<32} | "
             f"{r['status']:<10} | "
-            f"{r['create_ms']:>6.2f}m | "
-            f"{r['preroll_wait_ms']:>10.2f}m | "
-            f"{r['sink_paused_ms']:>9.2f}m | "
-            f"{r['gst_async_done_ms']:>8.2f}m | "
-            f"{r['set_playing_ms']:>6.2f}m | "
-            f"{r['old_drop_ms']:>7.2f}m | "
-            f"{r['total_switch_ms']:>11.2f}m"
+            f"{fmt_ms(r['create_ms'], 7)} | "
+            f"{fmt_ms(r['preroll_wait_ms'], 11)} | "
+            f"{fmt_ms(r['sink_paused_ms'], 10)} | "
+            f"{fmt_ms(r['gst_async_done_ms'], 9)} | "
+            f"{fmt_ms(r['set_playing_ms'], 7)} | "
+            f"{fmt_ms(r['old_drop_ms'], 8)} | "
+            f"{fmt_ms(r['total_switch_ms'], 12)}"
         )
     print("-" * len(header))
     print(f"Total Switches Analyzed : {len(results)}")
@@ -329,20 +348,18 @@ def run_offline_tests():
     assert res['total_switch_ms'] == 277.0
     assert len(warnings) == 0
 
-    # Test 7: CSV export and file destination consistency
-    out_csv = io.StringIO()
-    fieldnames = [
-        'switch_id', 'output', 'generation', 'session_id', 'status',
-        'create_ms', 'set_paused_ms', 'sink_paused_ms', 'gst_async_done_ms',
-        'preroll_wait_ms', 'preroll_res', 'set_playing_ms',
-        'old_teardown_ms', 'old_drop_ms', 'total_switch_ms'
-    ]
-    writer = csv.DictWriter(out_csv, fieldnames=fieldnames, extrasaction='ignore')
-    writer.writeheader()
-    for r in results:
-        writer.writerow(r)
-    csv_str = out_csv.getvalue()
-    assert "test-DP1-gen2,DP-1,2,test,SUCCESS,8.0,1.0,157.5,157.8,158.0,Ok(Success),1.0,20.0,80.0,277.0" in csv_str
+    # Test 7: CSV export and file destination consistency (with None as empty string)
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.csv') as tmp:
+        tmp_path = tmp.name
+    try:
+        results_csv, _ = analyze_switches(events_by_switch, output_csv=tmp_path)
+        with open(tmp_path, 'r', encoding='utf-8') as f:
+            csv_content = f.read()
+        assert "test-DP1-gen2,DP-1,2,test,SUCCESS,8.00,1.00,157.50,157.80,158.00,Ok(Success),1.00,21.00,80.00,277.00" in csv_content
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
     # Test 5 & 8: 2 outputs, multi-switch sequence with ANSI codes reproducing benchmark pattern
     synthetic_2outputs = """
@@ -401,6 +418,35 @@ def run_offline_tests():
     assert len(results) == 1
     assert results[0]['status'] == "INCOMPLETE"
     assert any("missing playback_started" in w for w in warnings)
+
+    # Test: Distinguish missing metrics from real zero measurements
+    synthetic_missing_metrics = """
+2026-10-10T00:00:01.000+09:00 INFO [OutputManager] event="video_switch_requested" switch_id="test-DP1-gen5" output="DP-1" generation=5 session_id="test"
+2026-10-10T00:00:01.010+09:00 INFO [Player] event="new_pipeline_created" switch_id="test-DP1-gen5" output="DP-1" generation=5 session_id="test"
+2026-10-10T00:00:01.100+09:00 INFO [Player] event="preroll_wait_returned" switch_id="test-DP1-gen5" output="DP-1" generation=5 state_change_res=Ok(Success)
+2026-10-10T00:00:01.200+09:00 INFO [Player] event="playback_started" switch_id="test-DP1-gen5" output="DP-1" generation=5
+"""
+    events_by_switch, _, _ = parse_log(io.StringIO(synthetic_missing_metrics))
+    with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.csv') as tmp:
+        tmp_path = tmp.name
+    try:
+        results, _ = analyze_switches(events_by_switch, output_csv=tmp_path)
+        assert len(results) == 1
+        res = results[0]
+        # Verify that missing metrics are None, not 0.0
+        assert res['create_ms'] is None
+        assert res['preroll_wait_ms'] is None
+        assert res['total_switch_ms'] is None
+        with open(tmp_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            row = next(reader)
+            # In CSV, missing values must be empty string, not "0.0"
+            assert row['create_ms'] == ""
+            assert row['preroll_wait_ms'] == ""
+            assert row['total_switch_ms'] == ""
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
     print("All offline self-test suites PASSED successfully!")
 
