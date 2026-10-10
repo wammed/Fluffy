@@ -283,10 +283,10 @@ impl GstVideoPlayer {
                     _ => None,
                 };
 
-                if let Some(ev) = event_opt {
-                    if let Ok(mut lock) = events_cb.lock() {
-                        lock.push(ev);
-                    }
+                if let Some(ev) = event_opt
+                    && let Ok(mut lock) = events_cb.lock()
+                {
+                    lock.push(ev);
                 }
 
                 gstreamer::BusSyncReply::Pass
