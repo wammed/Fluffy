@@ -101,11 +101,13 @@ def analyze_switches(events_by_switch, output_csv=None):
         duplicate_events = []
         time_reversals = []
         mismatched_events = []
-        last_total_ms = -1.0
+        last_main_total_ms = -1.0
+        last_gst_total_ms = -1.0
 
         for ev in events:
             ev_name = ev.get('event', '')
-            if ev_name.startswith('gst_sync_'):
+            is_gst = ev_name.startswith('gst_sync_')
+            if is_gst:
                 gst_events.append(ev)
             else:
                 if ev_name in seen_events:
@@ -128,17 +130,29 @@ def analyze_switches(events_by_switch, output_csv=None):
                     f"Switch '{switch_id}' generation mismatch in {ev_name}: {ev_gen} != {gen}"
                 )
 
-            # Time monotonicity check
+            # Time monotonicity check:
+            # GStreamer sync events are buffered during preroll and flushed in batch after
+            # preroll_wait_returned. Therefore, compare monotonicity separately within
+            # main sequential stage events and within GStreamer sync events to avoid
+            # comparing buffered events against post-preroll log flush time.
             tot_str = ev.get('total_elapsed_ms')
             if tot_str is not None:
                 try:
                     tot_val = float(tot_str)
-                    if last_total_ms >= 0.0 and tot_val < (last_total_ms - 0.5):
-                        time_reversals.append((ev_name, tot_val, last_total_ms))
-                        validation_warnings.append(
-                            f"Switch '{switch_id}' time reversal: {ev_name} ({tot_val}ms < {last_total_ms}ms)"
-                        )
-                    last_total_ms = max(last_total_ms, tot_val)
+                    if is_gst:
+                        if last_gst_total_ms >= 0.0 and tot_val < (last_gst_total_ms - 0.5):
+                            time_reversals.append((ev_name, tot_val, last_gst_total_ms))
+                            validation_warnings.append(
+                                f"Switch '{switch_id}' time reversal in gst_sync: {ev_name} ({tot_val}ms < {last_gst_total_ms}ms)"
+                            )
+                        last_gst_total_ms = max(last_gst_total_ms, tot_val)
+                    else:
+                        if last_main_total_ms >= 0.0 and tot_val < (last_main_total_ms - 0.5):
+                            time_reversals.append((ev_name, tot_val, last_main_total_ms))
+                            validation_warnings.append(
+                                f"Switch '{switch_id}' time reversal: {ev_name} ({tot_val}ms < {last_main_total_ms}ms)"
+                            )
+                        last_main_total_ms = max(last_main_total_ms, tot_val)
                 except ValueError:
                     validation_warnings.append(
                         f"Switch '{switch_id}' invalid total_elapsed_ms in {ev_name}: {tot_str}"
@@ -495,7 +509,7 @@ def run_offline_tests():
     assert results[0]['status'] == "INCOMPLETE"
     assert any("missing video_switch_committed" in w for w in warnings)
 
-    # Test: Abnormal event order (time reversal) must NOT be SUCCESS
+    # Test: Abnormal event order (time reversal in main events) must NOT be SUCCESS
     synthetic_time_reversal = """
 2026-10-10T00:00:01.000+09:00 INFO [OutputManager] event="video_switch_requested" switch_id="test-DP1-gen4r" output="DP-1" generation=4 session_id="test" total_elapsed_ms=100.0
 2026-10-10T00:00:01.010+09:00 INFO [Player] event="new_pipeline_created" switch_id="test-DP1-gen4r" output="DP-1" generation=4 session_id="test" total_elapsed_ms=50.0
@@ -504,6 +518,21 @@ def run_offline_tests():
 2026-10-10T00:00:01.200+09:00 INFO [Player] event="playback_started" switch_id="test-DP1-gen4r" output="DP-1" generation=4 session_id="test" total_elapsed_ms=170.0
 """
     events_by_switch, _, _ = parse_log(io.StringIO(synthetic_time_reversal))
+    results, warnings = analyze_switches(events_by_switch)
+    assert len(results) == 1
+    assert results[0]['status'] == "WARN(time_reversal)"
+
+    # Test: Abnormal event order (time reversal inside gst_sync events) must NOT be SUCCESS
+    synthetic_gst_time_reversal = """
+2026-10-10T00:00:01.000+09:00 INFO [OutputManager] event="video_switch_requested" switch_id="test-DP1-gen4g" output="DP-1" generation=4 session_id="test" total_elapsed_ms=10.0
+2026-10-10T00:00:01.010+09:00 INFO [Player] event="new_pipeline_created" switch_id="test-DP1-gen4g" output="DP-1" generation=4 session_id="test" total_elapsed_ms=20.0
+2026-10-10T00:00:01.100+09:00 INFO [Player] event="preroll_wait_returned" switch_id="test-DP1-gen4g" output="DP-1" generation=4 stage_elapsed_ms=100.0 total_elapsed_ms=120.0 state_change_res=Ok(Success)
+2026-10-10T00:00:01.101+09:00 INFO [Player] event="gst_sync_state_changed" switch_id="test-DP1-gen4g" output="DP-1" generation=4 session_id="test" total_elapsed_ms=50.0
+2026-10-10T00:00:01.102+09:00 INFO [Player] event="gst_sync_state_changed" switch_id="test-DP1-gen4g" output="DP-1" generation=4 session_id="test" total_elapsed_ms=30.0
+2026-10-10T00:00:01.120+09:00 INFO [Player] event="video_switch_committed" switch_id="test-DP1-gen4g" output="DP-1" generation=4 session_id="test" total_elapsed_ms=130.0
+2026-10-10T00:00:01.200+09:00 INFO [Player] event="playback_started" switch_id="test-DP1-gen4g" output="DP-1" generation=4 session_id="test" total_elapsed_ms=140.0
+"""
+    events_by_switch, _, _ = parse_log(io.StringIO(synthetic_gst_time_reversal))
     results, warnings = analyze_switches(events_by_switch)
     assert len(results) == 1
     assert results[0]['status'] == "WARN(time_reversal)"
