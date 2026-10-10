@@ -25,3 +25,6 @@ target
 
 # Benchmark Script
 fluffy-long-bench.fish
+
+# Cache Files by Python Script
+__pycache__/
