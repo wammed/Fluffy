@@ -92,8 +92,15 @@ def analyze_switches(events_by_switch, output_csv=None):
         ev_map = {}
         gst_events = []
 
-        # Check duplicates and time ordering
+        output = events[0].get('output', 'unknown')
+        gen = events[0].get('generation', '0')
+        session_id = events[0].get('session_id', 'unknown')
+
+        # Check duplicates, time ordering, and output/generation consistency
         seen_events = set()
+        duplicate_events = []
+        time_reversals = []
+        mismatched_events = []
         last_total_ms = -1.0
 
         for ev in events:
@@ -102,9 +109,24 @@ def analyze_switches(events_by_switch, output_csv=None):
                 gst_events.append(ev)
             else:
                 if ev_name in seen_events:
+                    duplicate_events.append(ev_name)
                     validation_warnings.append(f"Switch '{switch_id}' duplicate event: {ev_name}")
                 seen_events.add(ev_name)
                 ev_map[ev_name] = ev
+
+            # Output and generation consistency check
+            ev_out = ev.get('output')
+            if ev_out and ev_out != output:
+                mismatched_events.append((ev_name, f"output={ev_out} expected {output}"))
+                validation_warnings.append(
+                    f"Switch '{switch_id}' output mismatch in {ev_name}: {ev_out} != {output}"
+                )
+            ev_gen = ev.get('generation')
+            if ev_gen and not ev_name.startswith('old_pipeline_') and ev_gen != gen:
+                mismatched_events.append((ev_name, f"gen={ev_gen} expected {gen}"))
+                validation_warnings.append(
+                    f"Switch '{switch_id}' generation mismatch in {ev_name}: {ev_gen} != {gen}"
+                )
 
             # Time monotonicity check
             tot_str = ev.get('total_elapsed_ms')
@@ -112,6 +134,7 @@ def analyze_switches(events_by_switch, output_csv=None):
                 try:
                     tot_val = float(tot_str)
                     if last_total_ms >= 0.0 and tot_val < (last_total_ms - 0.5):
+                        time_reversals.append((ev_name, tot_val, last_total_ms))
                         validation_warnings.append(
                             f"Switch '{switch_id}' time reversal: {ev_name} ({tot_val}ms < {last_total_ms}ms)"
                         )
@@ -120,10 +143,6 @@ def analyze_switches(events_by_switch, output_csv=None):
                     validation_warnings.append(
                         f"Switch '{switch_id}' invalid total_elapsed_ms in {ev_name}: {tot_str}"
                     )
-
-        output = events[0].get('output', 'unknown')
-        gen = events[0].get('generation', '0')
-        session_id = events[0].get('session_id', 'unknown')
 
         def get_ms(ev_dict, key='stage_elapsed_ms'):
             if not ev_dict:
@@ -184,23 +203,50 @@ def analyze_switches(events_by_switch, output_csv=None):
 
         # Validation & Status check
         is_initial_play = 'new_pipeline_created' not in ev_map and 'pipeline_created' in ev_map
-        has_failed = 'preroll_failed' in ev_map or ev_map.get('video_switch_completed', {}).get('success') == 'false'
+        has_failed = (
+            'preroll_failed' in ev_map
+            or ev_map.get('video_switch_completed', {}).get('success') == 'false'
+            or 'Err' in preroll_res
+        )
         is_complete = 'playback_started' in ev_map
+        has_committed = is_initial_play or 'video_switch_committed' in ev_map
 
-        if has_failed:
-            status = 'FAILED'
-        elif is_initial_play:
-            status = 'INITIAL'
-        elif is_complete and 'Ok(Success)' in preroll_res:
-            status = 'SUCCESS'
-        elif is_complete:
-            status = f'WARN({preroll_res})'
-        else:
-            status = 'INCOMPLETE'
+        if not has_committed and not has_failed:
+            validation_warnings.append(f"Switch '{switch_id}' missing video_switch_committed")
+
+        if not is_complete and not has_failed:
             validation_warnings.append(f"Switch '{switch_id}' missing playback_started")
 
         if 'preroll_wait_returned' not in ev_map and not has_failed and not is_initial_play:
             validation_warnings.append(f"Switch '{switch_id}' missing preroll_wait_returned")
+
+        if has_failed:
+            status = 'FAILED'
+        elif is_initial_play:
+            if not is_complete:
+                status = 'INCOMPLETE'
+            elif duplicate_events:
+                status = 'WARN(duplicate_event)'
+            elif time_reversals:
+                status = 'WARN(time_reversal)'
+            elif mismatched_events:
+                status = 'WARN(mismatched_event)'
+            else:
+                status = 'INITIAL'
+        elif not has_committed:
+            status = 'INCOMPLETE'
+        elif not is_complete:
+            status = 'INCOMPLETE'
+        elif duplicate_events:
+            status = 'WARN(duplicate_event)'
+        elif time_reversals:
+            status = 'WARN(time_reversal)'
+        elif mismatched_events:
+            status = 'WARN(mismatched_event)'
+        elif 'Ok(Success)' in preroll_res:
+            status = 'SUCCESS'
+        else:
+            status = f'WARN({preroll_res})'
 
         results.append({
             'switch_id': switch_id,
@@ -374,11 +420,13 @@ def run_offline_tests():
 \x1b[2m2026-10-10T01:35:09.900+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="video_switch_requested" output=DP-1 generation=2 session_id=sess1
 \x1b[2m2026-10-10T01:35:09.901+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="new_pipeline_created" output=DP-1 generation=2 session_id=sess1
 \x1b[2m2026-10-10T01:35:09.940+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="preroll_wait_returned" output=DP-1 generation=2 session_id=sess1 elapsed_ms=150.0 state_change_res=Ok(Success)
+\x1b[2m2026-10-10T01:35:09.945+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="video_switch_committed" output=DP-1 generation=2 session_id=sess1
 \x1b[2m2026-10-10T01:35:09.950+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="old_pipeline_handle_dropped" output=DP-1 generation=1 session_id=sess1
 \x1b[2m2026-10-10T01:35:09.960+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="playback_started" output=DP-1 generation=2 session_id=sess1 total_elapsed_ms=250.0
 \x1b[2m2026-10-10T01:35:10.000+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="video_switch_requested" output=DP-2 generation=2 session_id=sess1
 \x1b[2m2026-10-10T01:35:10.001+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="new_pipeline_created" output=DP-2 generation=2 session_id=sess1
 \x1b[2m2026-10-10T01:35:10.040+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="preroll_wait_returned" output=DP-2 generation=2 session_id=sess1 elapsed_ms=160.0 state_change_res=Ok(Success)
+\x1b[2m2026-10-10T01:35:10.045+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="video_switch_committed" output=DP-2 generation=2 session_id=sess1
 \x1b[2m2026-10-10T01:35:10.050+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="old_pipeline_handle_dropped" output=DP-2 generation=1 session_id=sess1
 \x1b[2m2026-10-10T01:35:10.060+09:00\x1b[0m \x1b[32m INFO\x1b[0m event="playback_started" output=DP-2 generation=2 session_id=sess1 total_elapsed_ms=260.0
 """
@@ -397,7 +445,7 @@ def run_offline_tests():
     results_empty, warnings_empty = analyze_switches(empty_events)
     assert len(results_empty) == 0
 
-    # Test: Failed switch detection
+    # Test: Failed switch detection (preroll_failed event)
     synthetic_failed = """
 2026-10-10T00:00:01.000+09:00 INFO [OutputManager] event="video_switch_requested" switch_id="test-DP1-gen3" output="DP-1" generation=3 session_id="test"
 2026-10-10T00:00:01.050+09:00 ERROR [Player] event="preroll_failed" switch_id="test-DP1-gen3" output="DP-1" generation=3 total_elapsed_ms=50.0
@@ -408,16 +456,121 @@ def run_offline_tests():
     assert len(results) == 1
     assert results[0]['status'] == "FAILED"
 
+    # Test: Preroll error / state transition failure without Ok(Success)
+    synthetic_preroll_err = """
+2026-10-10T00:00:01.000+09:00 INFO [OutputManager] event="video_switch_requested" switch_id="test-DP1-gen3e" output="DP-1" generation=3 session_id="test"
+2026-10-10T00:00:01.010+09:00 INFO [Player] event="new_pipeline_created" switch_id="test-DP1-gen3e" output="DP-1" generation=3 session_id="test"
+2026-10-10T00:00:01.100+09:00 ERROR [Player] event="preroll_wait_returned" switch_id="test-DP1-gen3e" output="DP-1" generation=3 state_change_res="Err(StateChangeFailure)"
+2026-10-10T00:00:01.120+09:00 INFO [Player] event="video_switch_committed" switch_id="test-DP1-gen3e" output="DP-1" generation=3 session_id="test"
+2026-10-10T00:00:01.150+09:00 INFO [Player] event="playback_started" switch_id="test-DP1-gen3e" output="DP-1" generation=3 session_id="test"
+"""
+    events_by_switch, _, _ = parse_log(io.StringIO(synthetic_preroll_err))
+    results, _ = analyze_switches(events_by_switch)
+    assert len(results) == 1
+    assert results[0]['status'] == "FAILED"
+
     # Test: Incomplete switch (missing playback_started)
     synthetic_incomplete = """
 2026-10-10T00:00:01.000+09:00 INFO [OutputManager] event="video_switch_requested" switch_id="test-DP1-gen4" output="DP-1" generation=4 session_id="test"
+2026-10-10T00:00:01.010+09:00 INFO [Player] event="new_pipeline_created" switch_id="test-DP1-gen4" output="DP-1" generation=4 session_id="test"
 2026-10-10T00:00:01.100+09:00 INFO [Player] event="preroll_wait_returned" switch_id="test-DP1-gen4" output="DP-1" generation=4 stage_elapsed_ms=100.0 total_elapsed_ms=100.0 state_change_res=Ok(Success)
+2026-10-10T00:00:01.120+09:00 INFO [Player] event="video_switch_committed" switch_id="test-DP1-gen4" output="DP-1" generation=4 session_id="test"
 """
     events_by_switch, _, _ = parse_log(io.StringIO(synthetic_incomplete))
     results, warnings = analyze_switches(events_by_switch)
     assert len(results) == 1
     assert results[0]['status'] == "INCOMPLETE"
     assert any("missing playback_started" in w for w in warnings)
+
+    # Test: Missing video_switch_committed must NOT be SUCCESS
+    synthetic_missing_committed = """
+2026-10-10T00:00:01.000+09:00 INFO [OutputManager] event="video_switch_requested" switch_id="test-DP1-gen4c" output="DP-1" generation=4 session_id="test"
+2026-10-10T00:00:01.010+09:00 INFO [Player] event="new_pipeline_created" switch_id="test-DP1-gen4c" output="DP-1" generation=4 session_id="test"
+2026-10-10T00:00:01.100+09:00 INFO [Player] event="preroll_wait_returned" switch_id="test-DP1-gen4c" output="DP-1" generation=4 stage_elapsed_ms=100.0 total_elapsed_ms=100.0 state_change_res=Ok(Success)
+2026-10-10T00:00:01.200+09:00 INFO [Player] event="playback_started" switch_id="test-DP1-gen4c" output="DP-1" generation=4 session_id="test"
+"""
+    events_by_switch, _, _ = parse_log(io.StringIO(synthetic_missing_committed))
+    results, warnings = analyze_switches(events_by_switch)
+    assert len(results) == 1
+    assert results[0]['status'] == "INCOMPLETE"
+    assert any("missing video_switch_committed" in w for w in warnings)
+
+    # Test: Abnormal event order (time reversal) must NOT be SUCCESS
+    synthetic_time_reversal = """
+2026-10-10T00:00:01.000+09:00 INFO [OutputManager] event="video_switch_requested" switch_id="test-DP1-gen4r" output="DP-1" generation=4 session_id="test" total_elapsed_ms=100.0
+2026-10-10T00:00:01.010+09:00 INFO [Player] event="new_pipeline_created" switch_id="test-DP1-gen4r" output="DP-1" generation=4 session_id="test" total_elapsed_ms=50.0
+2026-10-10T00:00:01.100+09:00 INFO [Player] event="preroll_wait_returned" switch_id="test-DP1-gen4r" output="DP-1" generation=4 stage_elapsed_ms=100.0 total_elapsed_ms=150.0 state_change_res=Ok(Success)
+2026-10-10T00:00:01.120+09:00 INFO [Player] event="video_switch_committed" switch_id="test-DP1-gen4r" output="DP-1" generation=4 session_id="test" total_elapsed_ms=160.0
+2026-10-10T00:00:01.200+09:00 INFO [Player] event="playback_started" switch_id="test-DP1-gen4r" output="DP-1" generation=4 session_id="test" total_elapsed_ms=170.0
+"""
+    events_by_switch, _, _ = parse_log(io.StringIO(synthetic_time_reversal))
+    results, warnings = analyze_switches(events_by_switch)
+    assert len(results) == 1
+    assert results[0]['status'] == "WARN(time_reversal)"
+
+    # Test: Duplicate events in same generation must NOT be SUCCESS
+    synthetic_duplicate = """
+2026-10-10T00:00:01.000+09:00 INFO [OutputManager] event="video_switch_requested" switch_id="test-DP1-gen4d" output="DP-1" generation=4 session_id="test"
+2026-10-10T00:00:01.010+09:00 INFO [Player] event="new_pipeline_created" switch_id="test-DP1-gen4d" output="DP-1" generation=4 session_id="test"
+2026-10-10T00:00:01.100+09:00 INFO [Player] event="preroll_wait_returned" switch_id="test-DP1-gen4d" output="DP-1" generation=4 stage_elapsed_ms=100.0 total_elapsed_ms=100.0 state_change_res=Ok(Success)
+2026-10-10T00:00:01.120+09:00 INFO [Player] event="video_switch_committed" switch_id="test-DP1-gen4d" output="DP-1" generation=4 session_id="test"
+2026-10-10T00:00:01.125+09:00 INFO [Player] event="video_switch_committed" switch_id="test-DP1-gen4d" output="DP-1" generation=4 session_id="test"
+2026-10-10T00:00:01.200+09:00 INFO [Player] event="playback_started" switch_id="test-DP1-gen4d" output="DP-1" generation=4 session_id="test"
+"""
+    events_by_switch, _, _ = parse_log(io.StringIO(synthetic_duplicate))
+    results, warnings = analyze_switches(events_by_switch)
+    assert len(results) == 1
+    assert results[0]['status'] == "WARN(duplicate_event)"
+
+    # Test: Mismatched output in switch_id must NOT be SUCCESS
+    synthetic_mismatched = """
+2026-10-10T00:00:01.000+09:00 INFO [OutputManager] event="video_switch_requested" switch_id="test-DP1-gen4m" output="DP-1" generation=4 session_id="test"
+2026-10-10T00:00:01.010+09:00 INFO [Player] event="new_pipeline_created" switch_id="test-DP1-gen4m" output="DP-2" generation=4 session_id="test"
+2026-10-10T00:00:01.100+09:00 INFO [Player] event="preroll_wait_returned" switch_id="test-DP1-gen4m" output="DP-1" generation=4 stage_elapsed_ms=100.0 total_elapsed_ms=100.0 state_change_res=Ok(Success)
+2026-10-10T00:00:01.120+09:00 INFO [Player] event="video_switch_committed" switch_id="test-DP1-gen4m" output="DP-1" generation=4 session_id="test"
+2026-10-10T00:00:01.200+09:00 INFO [Player] event="playback_started" switch_id="test-DP1-gen4m" output="DP-1" generation=4 session_id="test"
+"""
+    events_by_switch, _, _ = parse_log(io.StringIO(synthetic_mismatched))
+    results, warnings = analyze_switches(events_by_switch)
+    assert len(results) == 1
+    assert results[0]['status'] == "WARN(mismatched_event)"
+
+    # Test: Rapid consecutive switch requests on same output
+    synthetic_rapid = """
+2026-10-10T00:00:01.000+09:00 INFO [OutputManager] event="video_switch_requested" output="DP-1" generation=2 session_id="sessR"
+2026-10-10T00:00:01.001+09:00 INFO [Player] event="new_pipeline_created" output="DP-1" generation=2 session_id="sessR"
+2026-10-10T00:00:01.050+09:00 INFO [OutputManager] event="video_switch_requested" output="DP-1" generation=3 session_id="sessR"
+2026-10-10T00:00:01.051+09:00 INFO [Player] event="new_pipeline_created" output="DP-1" generation=3 session_id="sessR"
+2026-10-10T00:00:01.100+09:00 INFO [Player] event="preroll_wait_returned" output="DP-1" generation=3 session_id="sessR" elapsed_ms=40.0 state_change_res=Ok(Success)
+2026-10-10T00:00:01.110+09:00 INFO [Player] event="video_switch_committed" output="DP-1" generation=3 session_id="sessR"
+2026-10-10T00:00:01.120+09:00 INFO [Player] event="old_pipeline_handle_dropped" output="DP-1" generation=2 session_id="sessR"
+2026-10-10T00:00:01.150+09:00 INFO [Player] event="playback_started" output="DP-1" generation=3 session_id="sessR" total_elapsed_ms=100.0
+"""
+    events_by_switch, _, _ = parse_log(io.StringIO(synthetic_rapid))
+    results, warnings = analyze_switches(events_by_switch)
+    assert len(results) == 2
+    r_g2 = next(r for r in results if r['generation'] == '2')
+    r_g3 = next(r for r in results if r['generation'] == '3')
+    # Preempted gen2 must be INCOMPLETE (never SUCCESS)
+    assert r_g2['status'] == "INCOMPLETE"
+    # Completed gen3 must be SUCCESS
+    assert r_g3['status'] == "SUCCESS"
+
+    # Test: Delayed old pipeline teardown/drop arriving after playback_started in legacy logs
+    synthetic_delayed = """
+2026-10-10T00:00:01.000+09:00 INFO [Player] event="new_pipeline_created" output="DP-1" generation=2 session_id="sessD"
+2026-10-10T00:00:01.100+09:00 INFO [Player] event="preroll_wait_returned" output="DP-1" generation=2 session_id="sessD" elapsed_ms=100.0 state_change_res=Ok(Success)
+2026-10-10T00:00:01.110+09:00 INFO [Player] event="video_switch_committed" output="DP-1" generation=2 session_id="sessD"
+2026-10-10T00:00:01.120+09:00 INFO [Player] event="playback_started" output="DP-1" generation=2 session_id="sessD" total_elapsed_ms=120.0
+2026-10-10T00:00:01.200+09:00 INFO [Player] event="old_pipeline_teardown_completed" output="DP-1" generation=1 session_id="sessD" elapsed_ms=50.0
+"""
+    events_by_switch, _, _ = parse_log(io.StringIO(synthetic_delayed))
+    results, warnings = analyze_switches(events_by_switch)
+    assert len(results) == 2
+    r_g2 = next(r for r in results if r['generation'] == '2')
+    r_g1_delayed = next(r for r in results if r['generation'] == '1')
+    assert r_g2['status'] == "SUCCESS"
+    assert r_g1_delayed['status'] == "INCOMPLETE"  # isolated teardown event
 
     # Test: Distinguish missing metrics from real zero measurements
     synthetic_missing_metrics = """
