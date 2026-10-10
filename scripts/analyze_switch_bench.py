@@ -62,7 +62,7 @@ def parse_log(log_path_or_file):
 
             switch_id = data.get('switch_id')
             if not switch_id:
-                if sid and out and out != 'None' and gen:
+                if sid and out and out != 'None' and not out.startswith('Some(') and gen:
                     # Legacy log fallback: old_pipeline_* events carried old_generation.
                     # Associate with the active in-flight switch for this output if present.
                     if event_name.startswith('old_pipeline_') and out in active_switches:

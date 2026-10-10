@@ -18,9 +18,9 @@ echo "Output directory: $OUT_DIR"
 # 1. GPU Telemetry via nvidia-smi (100ms sampling)
 NVIDIA_PID=""
 if command -v nvidia-smi >/dev/null 2>&1; then
-    # Test high-detail query first
-    DETAIL_QUERY="timestamp,utilization.gpu,utilization.memory,utilization.decoder,memory.used,memory.free,temperature.gpu,power.draw"
-    BASIC_QUERY="timestamp,utilization.gpu,utilization.memory,memory.used,memory.free"
+    # Test high-detail query first (including pstate and clocks)
+    DETAIL_QUERY="timestamp,pstate,clocks.current.graphics,clocks.current.sm,clocks.current.memory,utilization.gpu,utilization.memory,utilization.decoder,memory.used,memory.free,temperature.gpu,power.draw"
+    BASIC_QUERY="timestamp,pstate,clocks.current.graphics,clocks.current.sm,clocks.current.memory,utilization.gpu,utilization.memory,memory.used,memory.free"
 
     if nvidia-smi --query-gpu="${DETAIL_QUERY}" --format=csv,noheader -i 0 >/dev/null 2>"$OUT_DIR/nvidia_check.err"; then
         QUERY="${DETAIL_QUERY}"

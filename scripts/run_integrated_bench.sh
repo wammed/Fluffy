@@ -72,6 +72,9 @@ fi
 
 # 2. Record Environment Metadata
 echo "[2/6] Recording environment metadata..."
+SWITCH_ORDER="${SWITCH_ORDER:-default}"
+SLEEP_SECS="${SLEEP_SECS:-1.0}"
+
 cat <<EOF > "${BENCH_DIR}/env_metadata.txt"
 SESSION_TAG=${SESSION_TAG}
 KERNEL=$(uname -r)
@@ -83,6 +86,8 @@ FLUFFY_BIN_SHA256=$(sha256sum "${FLUFFY_BIN}" | awk '{print $1}')
 FLUFFY_PID=${FLUFFY_PID}
 DAEMON_MANAGED=${DAEMON_MANAGED}
 SWITCH_COUNT=${SWITCH_COUNT}
+SWITCH_ORDER=${SWITCH_ORDER}
+SLEEP_SECS=${SLEEP_SECS}
 VIDEO_A=${VIDEO_A}
 VIDEO_B=${VIDEO_B}
 START_EPOCH_MS=$(date +%s%3N)
@@ -106,19 +111,55 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # 4. Execute Standardized Switch Sequences
-echo "[4/6] Executing video switch test sequence (${SWITCH_COUNT} switches)..."
+echo "[4/6] Executing video switch test sequence (${SWITCH_COUNT} switches, order=${SWITCH_ORDER}, sleep=${SLEEP_SECS}s)..."
 TEST_VIDEOS=("${VIDEO_A}" "${VIDEO_B}")
 FAILED_SWITCHES=0
 
 for i in $(seq 1 "${SWITCH_COUNT}"); do
     target_idx=$(( (i - 1) % 2 ))
     target_video="${TEST_VIDEOS[$target_idx]}"
-    echo "  [Switch $i/${SWITCH_COUNT}] Switching to $(basename "$target_video")..."
-    if ! "${FLUFFY_BIN}" set-video "$target_video" >/dev/null 2>"${BENCH_DIR}/set_video_last.err"; then
-        echo "    WARNING: set-video command returned non-zero exit status on switch $i"
-        FAILED_SWITCHES=$((FAILED_SWITCHES + 1))
+    echo "  [Switch $i/${SWITCH_COUNT}] Switching to $(basename "$target_video") (order=${SWITCH_ORDER}, sleep=${SLEEP_SECS}s)..."
+
+    if [[ "${SWITCH_ORDER}" == "dp1_first" ]]; then
+        if ! "${FLUFFY_BIN}" set-video --output DP-1 "$target_video" >/dev/null 2>"${BENCH_DIR}/set_video_last.err"; then
+            FAILED_SWITCHES=$((FAILED_SWITCHES + 1))
+        fi
+        if ! "${FLUFFY_BIN}" set-video --output DP-2 "$target_video" >/dev/null 2>>"${BENCH_DIR}/set_video_last.err"; then
+            FAILED_SWITCHES=$((FAILED_SWITCHES + 1))
+        fi
+    elif [[ "${SWITCH_ORDER}" == "dp2_first" ]]; then
+        if ! "${FLUFFY_BIN}" set-video --output DP-2 "$target_video" >/dev/null 2>"${BENCH_DIR}/set_video_last.err"; then
+            FAILED_SWITCHES=$((FAILED_SWITCHES + 1))
+        fi
+        if ! "${FLUFFY_BIN}" set-video --output DP-1 "$target_video" >/dev/null 2>>"${BENCH_DIR}/set_video_last.err"; then
+            FAILED_SWITCHES=$((FAILED_SWITCHES + 1))
+        fi
+    elif [[ "${SWITCH_ORDER}" == "alternate" ]]; then
+        if (( i % 2 == 1 )); then
+            # Odd: DP-1 first
+            if ! "${FLUFFY_BIN}" set-video --output DP-1 "$target_video" >/dev/null 2>"${BENCH_DIR}/set_video_last.err"; then
+                FAILED_SWITCHES=$((FAILED_SWITCHES + 1))
+            fi
+            if ! "${FLUFFY_BIN}" set-video --output DP-2 "$target_video" >/dev/null 2>>"${BENCH_DIR}/set_video_last.err"; then
+                FAILED_SWITCHES=$((FAILED_SWITCHES + 1))
+            fi
+        else
+            # Even: DP-2 first
+            if ! "${FLUFFY_BIN}" set-video --output DP-2 "$target_video" >/dev/null 2>"${BENCH_DIR}/set_video_last.err"; then
+                FAILED_SWITCHES=$((FAILED_SWITCHES + 1))
+            fi
+            if ! "${FLUFFY_BIN}" set-video --output DP-1 "$target_video" >/dev/null 2>>"${BENCH_DIR}/set_video_last.err"; then
+                FAILED_SWITCHES=$((FAILED_SWITCHES + 1))
+            fi
+        fi
+    else
+        # Default: standard simultaneous invocation
+        if ! "${FLUFFY_BIN}" set-video "$target_video" >/dev/null 2>"${BENCH_DIR}/set_video_last.err"; then
+            echo "    WARNING: set-video command returned non-zero exit status on switch $i"
+            FAILED_SWITCHES=$((FAILED_SWITCHES + 1))
+        fi
     fi
-    sleep 1.0 # Allow post-switch stabilization
+    sleep "${SLEEP_SECS}" # Allow post-switch stabilization
 done
 
 # 5. Stop Telemetry
