@@ -45,6 +45,7 @@ Fluffy は、Pop!_OS COSMIC Desktop および Linux Wayland コンポジター�
 ### 3. アーキテクチャとプロトコルの詳細理解
 - **非破壊オーバーレイ共存モデル**: [TECHNICAL_DESIGN.ja.md: セクション 3 & 4](TECHNICAL_DESIGN.ja.md) を参照し、`cosmic-bg` と干渉せず `Layer::Bottom` で描画・復帰する仕組みを理解できます。
 - **黒画面ゼロ・プリロール切替 & 非同期変換**: [TECHNICAL_DESIGN.ja.md: セクション 8 & 11](TECHNICAL_DESIGN.ja.md) にてデュアルパイプライン切り替え構造および非同期バックグラウンド変換を詳解しています。
+- **COSMIC専用ハードウェアクロスフェード**: [TECHNICAL_DESIGN.ja.md: セクション 26](TECHNICAL_DESIGN.ja.md) にて Wayland `wp_alpha_modifier_v1` によるゼロコピー GPU 合成と自動要件判定を詳解しています。
 - **IPC 通信仕様**: [TECHNICAL_DESIGN.ja.md: セクション 9](TECHNICAL_DESIGN.ja.md) にて Unix ドメインソケット上の JSON Lines プロトコル仕様を確認できます。
 
 ### 4. 性能実績と実機検証エビデンスの確認

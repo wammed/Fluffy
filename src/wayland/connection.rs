@@ -15,6 +15,9 @@ use wayland_client::{
     globals::registry_queue_init,
     protocol::{wl_output, wl_surface},
 };
+use wayland_protocols::wp::alpha_modifier::v1::client::{
+    wp_alpha_modifier_surface_v1::WpAlphaModifierSurfaceV1, wp_alpha_modifier_v1::WpAlphaModifierV1,
+};
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1::{self, ZwlrForeignToplevelHandleV1},
     zwlr_foreign_toplevel_manager_v1::{self, ZwlrForeignToplevelManagerV1},
@@ -46,6 +49,13 @@ pub enum WaylandOutputEvent {
     Destroyed(wl_output::WlOutput),
 }
 
+#[derive(Clone)]
+pub struct AlphaModifierContext {
+    pub modifier: WpAlphaModifierV1,
+    pub conn: Connection,
+    pub qh: QueueHandle<WaylandState>,
+}
+
 pub struct WaylandState {
     pub registry_state: RegistryState,
     pub output_state: OutputState,
@@ -59,6 +69,7 @@ pub struct WaylandState {
     pub pending_toplevel_states: HashMap<wayland_client::backend::ObjectId, bool>,
     pub fullscreen_events: Vec<bool>,
     pub supports_fullscreen_detection: bool,
+    pub alpha_modifier: Option<WpAlphaModifierV1>,
 }
 
 impl ProvidesRegistryState for WaylandState {
@@ -324,6 +335,30 @@ impl wayland_client::Dispatch<ZcosmicToplevelHandleV1, ()> for WaylandState {
 smithay_client_toolkit::delegate_registry!(WaylandState);
 smithay_client_toolkit::delegate_dispatch2!(WaylandState);
 
+impl wayland_client::Dispatch<WpAlphaModifierV1, ()> for WaylandState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpAlphaModifierV1,
+        _event: wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl wayland_client::Dispatch<WpAlphaModifierSurfaceV1, ()> for WaylandState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpAlphaModifierSurfaceV1,
+        _event: wayland_protocols::wp::alpha_modifier::v1::client::wp_alpha_modifier_surface_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
 impl WaylandContext {
     pub fn init() -> Result<Self> {
         let conn = {
@@ -397,6 +432,25 @@ impl WaylandContext {
         let supports_fullscreen_detection =
             cosmic_toplevel_info.is_some() || foreign_toplevel_manager.is_some();
 
+        let has_alpha_modifier = globals
+            .contents()
+            .with_list(|list| list.iter().any(|g| g.interface == "wp_alpha_modifier_v1"));
+        let alpha_modifier = if has_alpha_modifier {
+            tracing::info!(
+                operation = "alpha_modifier_detect",
+                "[Wayland] Compositor supports wp_alpha_modifier_v1: hardware GPU crossfade available"
+            );
+            registry_state
+                .bind_one::<WpAlphaModifierV1, _, _>(&qh, 1..=1, ())
+                .ok()
+        } else {
+            tracing::info!(
+                operation = "alpha_modifier_detect",
+                "[Wayland] Compositor does NOT advertise wp_alpha_modifier_v1: hardware crossfade unavailable"
+            );
+            None
+        };
+
         let mut state = WaylandState {
             registry_state,
             output_state,
@@ -410,6 +464,7 @@ impl WaylandContext {
             pending_toplevel_states: HashMap::new(),
             fullscreen_events: Vec::new(),
             supports_fullscreen_detection,
+            alpha_modifier,
         };
 
         // Roundtrip to enumerate globals & outputs
@@ -571,5 +626,23 @@ impl WaylandContext {
     /// Takes any queued fullscreen state changes (true = fullscreen active, false = fullscreen cleared).
     pub fn take_fullscreen_events(&mut self) -> Vec<bool> {
         std::mem::take(&mut self.state.fullscreen_events)
+    }
+
+    /// Whether the connected compositor advertises and supports the `wp_alpha_modifier_v1`
+    /// protocol for hardware GPU crossfade transitions.
+    pub fn supports_alpha_modifier(&self) -> bool {
+        self.state.alpha_modifier.is_some()
+    }
+
+    /// Returns a cloned context for manipulating alpha modifier surface properties if supported.
+    pub fn alpha_modifier_context(&self) -> Option<AlphaModifierContext> {
+        self.state
+            .alpha_modifier
+            .as_ref()
+            .map(|m| AlphaModifierContext {
+                modifier: m.clone(),
+                conn: self.conn.clone(),
+                qh: self.qh.clone(),
+            })
     }
 }

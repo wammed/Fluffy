@@ -53,7 +53,7 @@ pub fn evaluate_transition_capability(env: &TransitionEnvironment) -> Transition
             is_crossfade_ready: false,
             effective_mode_for_auto: TransitionMode::HardCut,
             diagnostic_reason:
-                "Waylandコンポジターがアルファ透過度制御プロトコルに対応していません (ハードカット適用)"
+                "COSMICコンポジタがアルファ透過度制御プロトコルに対応していません (ハードカット適用)"
                     .to_string(),
         };
     }
@@ -62,7 +62,7 @@ pub fn evaluate_transition_capability(env: &TransitionEnvironment) -> Transition
         return TransitionCapability {
             is_crossfade_ready: true,
             effective_mode_for_auto: TransitionMode::Crossfade,
-            diagnostic_reason: "ハードウェア支援 (NVDEC/CUDA/VA-API) によるクロスフェード利用可能"
+            diagnostic_reason: "COSMIC (cosmic-comp) のハードウェア透過支援 (wp_alpha_modifier_v1 / NVDEC) によるクロスフェード利用可能"
                 .to_string(),
         };
     }
@@ -194,7 +194,7 @@ mod tests {
         let cap = evaluate_transition_capability(&env);
         assert!(cap.is_crossfade_ready);
         assert_eq!(cap.effective_mode_for_auto, TransitionMode::Crossfade);
-        assert!(cap.diagnostic_reason.contains("ハードウェア支援"));
+        assert!(cap.diagnostic_reason.contains("ハードウェア透過"));
     }
 
     #[test]

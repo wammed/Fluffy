@@ -11,6 +11,7 @@ unsafe extern "C" {
     fn gst_wl_display_handle_context_new(
         display: *mut std::ffi::c_void,
     ) -> *mut gstreamer::ffi::GstContext;
+    fn gst_wl_window_get_wl_surface(window: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
 }
 
 pub struct PipelineHandle {
@@ -24,7 +25,6 @@ pub struct PipelineHandle {
     pub video_id: String,
     pub session_id: String,
     pub loop_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    pub alpha_element: Option<gstreamer::Element>,
 }
 
 impl PipelineHandle {
@@ -38,33 +38,6 @@ impl PipelineHandle {
         width: u32,
         height: u32,
         video_path: &Path,
-    ) -> Result<Self> {
-        unsafe {
-            Self::new_with_alpha(
-                output_name,
-                generation,
-                raw_display_ptr,
-                raw_surface_ptr,
-                width,
-                height,
-                video_path,
-                None,
-            )
-        }
-    }
-
-    /// # Safety
-    /// `raw_display_ptr` must be a valid pointer to a `wl_display`.
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe fn new_with_alpha(
-        output_name: impl Into<String>,
-        generation: u64,
-        raw_display_ptr: *mut std::ffi::c_void,
-        raw_surface_ptr: usize,
-        width: u32,
-        height: u32,
-        video_path: &Path,
-        initial_alpha: Option<f64>,
     ) -> Result<Self> {
         let abs_path = video_path.canonicalize()?;
         let uri = gstreamer::glib::filename_to_uri(&abs_path, None)
@@ -82,6 +55,8 @@ impl PipelineHandle {
         // 2. Create dedicated waylandsink and apply context immediately
         let sink = gstreamer::ElementFactory::make("waylandsink")
             .name("fluffy-waylandsink")
+            .property("show-preroll-frame", false)
+            .property("force-aspect-ratio", false)
             .build()
             .map_err(|e| FluffyError::Playback(format!("Failed to create waylandsink: {e}")))?;
         sink.set_context(&gst_wl_context);
@@ -112,17 +87,6 @@ impl PipelineHandle {
             .property("video-sink", &sink)
             .property("volume", 0.0f64);
 
-        let alpha_element = if let Some(alpha) = initial_alpha {
-            gstreamer::ElementFactory::make("alpha")
-                .name("fluffy-crossfade-alpha")
-                .property("alpha", alpha)
-                .property("prefer-passthrough", true)
-                .build()
-                .ok()
-        } else {
-            None
-        };
-
         if let Some(ref asink) = audio_sink {
             playbin_builder = playbin_builder.property("audio-sink", asink);
         }
@@ -130,10 +94,6 @@ impl PipelineHandle {
         let playbin = playbin_builder
             .build()
             .map_err(|e| FluffyError::Playback(format!("Failed to create playbin: {e}")))?;
-
-        if let Some(ref a_elem) = alpha_element {
-            playbin.set_property("video-filter", a_elem);
-        }
 
         let pipeline = playbin
             .dynamic_cast::<gstreamer::Pipeline>()
@@ -150,7 +110,6 @@ impl PipelineHandle {
             video = ?video_path,
             width,
             height,
-            has_alpha_filter = alpha_element.is_some(),
             "[Pipeline] Created GStreamer playbin pipeline with waylandsink"
         );
 
@@ -194,14 +153,84 @@ impl PipelineHandle {
             video_id,
             session_id,
             loop_count,
-            alpha_element,
         })
     }
 
-    /// Sets the opacity (alpha) of the video pipeline if crossfade alpha filter is active.
-    pub fn set_alpha(&self, alpha: f64) {
-        if let Some(ref elem) = self.alpha_element {
-            elem.set_property("alpha", alpha.clamp(0.0, 1.0));
+    /// # Safety
+    /// Compatibility alias for `new`. Initial alpha is ignored as alpha is managed via Wayland GPU modifiers.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn new_with_alpha(
+        output_name: impl Into<String>,
+        generation: u64,
+        raw_display_ptr: *mut std::ffi::c_void,
+        raw_surface_ptr: usize,
+        width: u32,
+        height: u32,
+        video_path: &Path,
+        _initial_alpha: Option<f64>,
+    ) -> Result<Self> {
+        unsafe {
+            Self::new(
+                output_name,
+                generation,
+                raw_display_ptr,
+                raw_surface_ptr,
+                width,
+                height,
+                video_path,
+            )
+        }
+    }
+
+    /// Retrieves the raw `wl_surface` pointer created by `waylandsink`'s internal window.
+    /// Returns `None` if the sink has not initialized its window yet (e.g. before preroll).
+    pub fn get_wayland_surface(&self) -> Option<*mut std::ffi::c_void> {
+        self.get_wayland_surfaces().map(|(video, _)| video)
+    }
+
+    /// Retrieves both `video_surface` and `area_surface` pointers from `waylandsink`'s window.
+    /// Fading both surfaces ensures background border letterboxes (if any) do not obscure
+    /// the underlying old video during crossfade transition.
+    pub fn get_wayland_surfaces(
+        &self,
+    ) -> Option<(*mut std::ffi::c_void, Option<*mut std::ffi::c_void>)> {
+        let sink_ptr = self.sink.as_ptr();
+        if sink_ptr.is_null() {
+            return None;
+        }
+        unsafe {
+            // Offset of `window` in `GstWaylandSink` struct (ext/wayland/gstwaylandsink.h)
+            // On x86_64: sizeof(GstVideoSink)=712, sizeof(GMutex)=8 -> offset=728 (0x2d8)
+            let window_ptr = *((sink_ptr as *const u8).add(728) as *const *mut std::ffi::c_void);
+            if window_ptr.is_null() {
+                None
+            } else {
+                let video_surf = gst_wl_window_get_wl_surface(window_ptr);
+                if video_surf.is_null() {
+                    None
+                } else {
+                    // In GstWlWindowPrivate, video_surface_wrapper is at private_offset + 0x50,
+                    // and area_surface_wrapper is at private_offset + 0x30 (exactly 0x20 bytes before).
+                    // In GLib, private_offset is negative relative to GObject instance window_ptr.
+                    // We dynamically find the pointer slot holding video_surf in window_ptr memory
+                    // and read area_surface_wrapper 32 bytes before it.
+                    let win_bytes = window_ptr as *const u8;
+                    let mut area_surf = None;
+                    for off in (-0x400..0x0).step_by(8) {
+                        let ptr = *(win_bytes.offset(off) as *const *mut std::ffi::c_void);
+                        if ptr == video_surf {
+                            let area_ptr =
+                                *(win_bytes.offset(off - 0x20) as *const *mut std::ffi::c_void);
+                            if !area_ptr.is_null() {
+                                area_surf = Some(area_ptr);
+                            }
+                            break;
+                        }
+                    }
+
+                    Some((video_surf, area_surf))
+                }
+            }
         }
     }
 }
@@ -223,6 +252,56 @@ impl Drop for PipelineHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_inspect_sink_offsets() {
+        let _ = gstreamer::init();
+        let path = Path::new("/home/susie/Videos/Fluffy-Loops/cyberpunk-night-city.1920x1080.mp4");
+        if !path.exists() {
+            return;
+        }
+        let playbin = gstreamer::ElementFactory::make("playbin")
+            .property("uri", format!("file://{}", path.display()))
+            .build()
+            .unwrap();
+        let sink = gstreamer::ElementFactory::make("waylandsink")
+            .build()
+            .unwrap();
+        playbin.set_property("video-sink", &sink);
+        let _ = playbin.set_state(gstreamer::State::Paused);
+        let _ = playbin.state(gstreamer::ClockTime::from_seconds(2));
+
+        let sink_ptr = sink.as_ptr() as *const u8;
+        let window_ptr = unsafe { *(sink_ptr.add(0x2d8) as *const *mut std::ffi::c_void) };
+        if !window_ptr.is_null() {
+            unsafe {
+                use wayland_client::Proxy;
+                let surf = gst_wl_window_get_wl_surface(window_ptr);
+                if !surf.is_null() {
+                    let win_bytes = window_ptr as *const u8;
+                    let mut found_area = None;
+                    for off in (-0x400..0x0).step_by(8) {
+                        let ptr = *(win_bytes.offset(off) as *const *mut std::ffi::c_void);
+                        if ptr == surf {
+                            let area_ptr =
+                                *(win_bytes.offset(off - 0x20) as *const *mut std::ffi::c_void);
+                            found_area = Some(area_ptr);
+                            break;
+                        }
+                    }
+                    if let Some(area_ptr) = found_area {
+                        assert!(!area_ptr.is_null());
+                        let obj_id = wayland_client::backend::ObjectId::from_ptr(
+                            &wayland_client::protocol::wl_surface::WlSurface::interface(),
+                            area_ptr as *mut _,
+                        );
+                        assert!(obj_id.is_ok());
+                    }
+                }
+            }
+        }
+        let _ = playbin.set_state(gstreamer::State::Null);
+    }
 
     #[test]
     fn test_pipeline_creation_nonexistent_file_fails() {

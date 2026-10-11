@@ -45,6 +45,7 @@ Use this portal to navigate specifications, architecture design records, benchma
 ### 3. Understanding the Architecture & Protocols
 - **Non-Destructive Overlay Model**: Read [TECHNICAL_DESIGN.md: Section 3 & 4](TECHNICAL_DESIGN.md#3-core-architecture) to understand how Fluffy renders on `Layer::Bottom` without interfering with `cosmic-bg`.
 - **Zero-Black-Screen Pre-Roll & Async Normalization**: Check [TECHNICAL_DESIGN.md: Section 8 & 11](TECHNICAL_DESIGN.md) for details on the dual-pipeline seamless switching model and non-blocking worker threads.
+- **Hardware GPU Crossfade (COSMIC Exclusive)**: Check [TECHNICAL_DESIGN.md: Section 28](TECHNICAL_DESIGN.md) for details on zero-copy `wp_alpha_modifier_v1` composition and hardware diagnostics.
 - **IPC Protocol**: Review [TECHNICAL_DESIGN.md: Section 9](TECHNICAL_DESIGN.md#9-ipc-specification) for the JSON Lines Unix domain socket protocol specification.
 
 ### 4. Reviewing Performance & Hardware Evidence

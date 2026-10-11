@@ -369,7 +369,7 @@ impl WallpaperDaemon {
                     .map(|o| (o.width as u64) * (o.height as u64))
                     .sum();
                 let trans_env = crate::playback::transition::probe_system_transition_environment(
-                    true,
+                    self.wayland_ctx.supports_alpha_modifier(),
                     output_statuses.len(),
                     if total_pixels == 0 {
                         1920 * 1080

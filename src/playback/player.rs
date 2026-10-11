@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use gstreamer::prelude::*;
 use gstreamer_video::prelude::*;
+use wayland_client::Proxy;
 
 use super::pipeline::PipelineHandle;
 use super::state::PlaybackState;
@@ -29,6 +30,7 @@ pub struct GstVideoPlayer {
     generation: u64,
     loop_count: u64,
     active_crossfade_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    alpha_modifier_ctx: Option<crate::wayland::AlphaModifierContext>,
 }
 
 impl GstVideoPlayer {
@@ -62,7 +64,15 @@ impl GstVideoPlayer {
             generation: 0,
             loop_count: 0,
             active_crossfade_cancel: None,
+            alpha_modifier_ctx: None,
         })
+    }
+
+    pub fn set_alpha_modifier_context(
+        &mut self,
+        ctx: Option<crate::wayland::AlphaModifierContext>,
+    ) {
+        self.alpha_modifier_ctx = ctx;
     }
 
     pub fn loop_count(&self) -> u64 {
@@ -99,9 +109,6 @@ impl GstVideoPlayer {
     pub fn finish_active_crossfade(&mut self) {
         if let Some(cancel) = self.active_crossfade_cancel.take() {
             cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        if let Some(ref handle) = self.pipeline_handle {
-            handle.set_alpha(1.0);
         }
     }
 
@@ -152,7 +159,7 @@ impl GstVideoPlayer {
         // 6. If crossfade: gradually animate alpha 0.0 -> 1.0 over crossfade_ms, then tear down old pipeline.
         //    If hard cut: immediately tear down old pipeline.
         if self.pipeline_handle.is_some() {
-            let is_crossfade = if crossfade_ms > 0 {
+            let is_crossfade = if crossfade_ms > 0 && self.alpha_modifier_ctx.is_some() {
                 let trans_env = crate::playback::transition::probe_system_transition_environment(
                     true,
                     1,
@@ -179,10 +186,9 @@ impl GstVideoPlayer {
                 "[Player] New pipeline created for video switch"
             );
 
-            let initial_alpha = if is_crossfade { Some(0.0) } else { None };
             let create_start = std::time::Instant::now();
             let new_handle = unsafe {
-                PipelineHandle::new_with_alpha(
+                PipelineHandle::new(
                     &self.output_name,
                     generation,
                     self.raw_display_ptr,
@@ -190,9 +196,9 @@ impl GstVideoPlayer {
                     self.width,
                     self.height,
                     video,
-                    initial_alpha,
                 )?
             };
+
             let create_elapsed_ms = create_start.elapsed().as_secs_f64() * 1000.0;
 
             tracing::info!(
@@ -517,6 +523,86 @@ impl GstVideoPlayer {
                 "[Player] New pipeline first frame displayable"
             );
 
+            // Check if hardware GPU crossfade (wp_alpha_modifier_v1) is available and enabled
+            let mut hardware_crossfade = None;
+            if is_crossfade && let Some(ref alpha_ctx) = self.alpha_modifier_ctx {
+                if let Some((video_ptr, area_ptr_opt)) = new_handle.get_wayland_surfaces() {
+                    unsafe {
+                        match wayland_client::backend::ObjectId::from_ptr(
+                            &wayland_client::protocol::wl_surface::WlSurface::interface(),
+                            video_ptr as *mut _,
+                        ) {
+                            Ok(video_obj_id) => {
+                                match wayland_client::Proxy::from_id(&alpha_ctx.conn, video_obj_id)
+                                {
+                                    Ok(video_wl_surf) => {
+                                        let video_alpha_mod = alpha_ctx.modifier.get_surface(
+                                            &video_wl_surf,
+                                            &alpha_ctx.qh,
+                                            (),
+                                        );
+                                        // Set alpha multiplier to 0 (completely transparent) initially
+                                        video_alpha_mod.set_multiplier(0);
+                                        video_wl_surf.commit();
+
+                                        let mut area_crossfade = None;
+                                        if let Some(area_ptr) = area_ptr_opt {
+                                            if let Ok(area_obj_id) = wayland_client::backend::ObjectId::from_ptr(
+                                                &wayland_client::protocol::wl_surface::WlSurface::interface(),
+                                                area_ptr as *mut _,
+                                            ) {
+                                                if let Ok(area_wl_surf) = wayland_client::Proxy::from_id(&alpha_ctx.conn, area_obj_id) {
+                                                    let area_alpha_mod = alpha_ctx
+                                                        .modifier
+                                                        .get_surface(&area_wl_surf, &alpha_ctx.qh, ());
+                                                    area_alpha_mod.set_multiplier(0);
+                                                    area_wl_surf.commit();
+                                                    area_crossfade = Some((area_wl_surf, area_alpha_mod));
+                                                    tracing::info!(
+                                                        output = %output,
+                                                        "[Player] Hardware crossfade area_surface (background) alpha initialized to 0"
+                                                    );
+                                                }
+                                            }
+                                        }
+
+                                        let has_area = area_crossfade.is_some();
+                                        let _ = alpha_ctx.conn.flush();
+                                        hardware_crossfade = Some((
+                                            video_wl_surf,
+                                            video_alpha_mod,
+                                            area_crossfade,
+                                            alpha_ctx.conn.clone(),
+                                        ));
+                                        tracing::info!(
+                                            output = %output,
+                                            has_area_surface = has_area,
+                                            "[Player] Hardware crossfade video_surface alpha initialized to 0"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = ?e, "[Player] Failed to wrap video wl_surface from ObjectId");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = ?e, "[Player] Failed to get ObjectId from video Wayland surface pointer");
+                            }
+                        }
+                    }
+                } else {
+                    tracing::warn!(
+                        output = %output,
+                        "[Player] Could not obtain Wayland surface pointer from waylandsink for crossfade"
+                    );
+                }
+            }
+
+            // If we have hardware crossfade set up, enable show-preroll-frame now that surface is transparent
+            if hardware_crossfade.is_some() {
+                new_handle.sink.set_property("show-preroll-frame", true);
+            }
+
             // Now transition new pipeline to Playing
             let playing_start = std::time::Instant::now();
             tracing::info!(
@@ -569,8 +655,9 @@ impl GstVideoPlayer {
             );
 
             if let Some(old) = old_handle {
-                if is_crossfade && let Some(ref current) = self.pipeline_handle {
-                    let alpha_elem = current.alpha_element.clone();
+                if let Some((video_surf, video_alpha_mod, area_crossfade_opt, conn)) =
+                    hardware_crossfade
+                {
                     let cancel_flag =
                         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     let cancel_clone = cancel_flag.clone();
@@ -588,7 +675,7 @@ impl GstVideoPlayer {
                         generation = generation,
                         session_id = %sid,
                         duration_ms = dur_ms,
-                        "[Player] Starting seamless crossfade transition"
+                        "[Player] Starting seamless hardware GPU crossfade transition (wp_alpha_modifier_v1)"
                     );
 
                     let _ = std::thread::Builder::new()
@@ -596,22 +683,34 @@ impl GstVideoPlayer {
                         .spawn(move || {
                             let start = std::time::Instant::now();
                             let total_dur = std::time::Duration::from_millis(dur_ms as u64);
-                            let frame_dur = std::time::Duration::from_millis(16);
+                            let frame_dur = std::time::Duration::from_millis(8);
 
                             loop {
                                 if cancel_clone.load(std::sync::atomic::Ordering::SeqCst) {
-                                    if let Some(ref elem) = alpha_elem {
-                                        elem.set_property("alpha", 1.0f64);
+                                    video_alpha_mod.destroy();
+                                    video_surf.commit();
+                                    if let Some((ref area_surf, ref area_alpha_mod)) =
+                                        area_crossfade_opt
+                                    {
+                                        area_alpha_mod.destroy();
+                                        area_surf.commit();
                                     }
+                                    let _ = conn.flush();
                                     let _ = old.pipeline.set_state(gstreamer::State::Null);
                                     return;
                                 }
 
                                 let elapsed = start.elapsed();
                                 if elapsed >= total_dur {
-                                    if let Some(ref elem) = alpha_elem {
-                                        elem.set_property("alpha", 1.0f64);
+                                    video_alpha_mod.destroy();
+                                    video_surf.commit();
+                                    if let Some((ref area_surf, ref area_alpha_mod)) =
+                                        area_crossfade_opt
+                                    {
+                                        area_alpha_mod.destroy();
+                                        area_surf.commit();
                                     }
+                                    let _ = conn.flush();
                                     let _ = old.pipeline.set_state(gstreamer::State::Null);
                                     tracing::info!(
                                         event = "crossfade_transition_completed",
@@ -619,20 +718,28 @@ impl GstVideoPlayer {
                                         output = %out_name,
                                         session_id = %s_id,
                                         elapsed_ms = elapsed.as_secs_f64() * 1000.0,
-                                        "[Player] Crossfade transition completed successfully"
+                                        "[Player] Hardware GPU crossfade transition completed successfully"
                                     );
                                     break;
                                 }
 
                                 let progress = (elapsed.as_secs_f64() / total_dur.as_secs_f64())
                                     .clamp(0.0, 1.0);
-                                // Smoothstep easing: 3x^2 - 2x^3
+                                // Smoothstep cubic easing: 3x^2 - 2x^3
                                 let alpha = (3.0 * progress * progress
                                     - 2.0 * progress * progress * progress)
                                     .clamp(0.0, 1.0);
-                                if let Some(ref elem) = alpha_elem {
-                                    elem.set_property("alpha", alpha);
+                                let factor = (alpha * (u32::MAX as f64)).round() as u32;
+
+                                video_alpha_mod.set_multiplier(factor);
+                                video_surf.commit();
+                                if let Some((ref area_surf, ref area_alpha_mod)) =
+                                    area_crossfade_opt
+                                {
+                                    area_alpha_mod.set_multiplier(factor);
+                                    area_surf.commit();
                                 }
+                                let _ = conn.flush();
 
                                 std::thread::sleep(frame_dur);
                             }

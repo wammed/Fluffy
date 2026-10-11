@@ -195,13 +195,14 @@ impl OutputManager {
         let width = surface.width;
         let height = surface.height;
 
-        let player = GstVideoPlayer::new_with_name(
+        let mut player = GstVideoPlayer::new_with_name(
             &name,
             ctx.raw_display_ptr(),
             surface.raw_surface_ptr,
             width,
             height,
         )?;
+        player.set_alpha_modifier_context(ctx.alpha_modifier_context());
 
         let geom = ctx.output_geometry(&wl_out);
         let scale = geom.as_ref().map(|g| g.scale).unwrap_or(1);

@@ -550,7 +550,7 @@ impl Application for FluffySettingsApp {
                 let _ = self.config.save();
                 let mode_name = match mode {
                     fluffy::config::TransitionMode::Auto => "自動判別 (Auto)",
-                    fluffy::config::TransitionMode::Crossfade => "クロスフェード (Crossfade)",
+                    fluffy::config::TransitionMode::Crossfade => "クロスフェード (COSMIC専用)",
                     fluffy::config::TransitionMode::HardCut => "ハードカット (Hard Cut)",
                 };
                 self.status_message = Some((
@@ -817,9 +817,9 @@ impl Application for FluffySettingsApp {
 
         let btn_crossfade = if current_transition_mode == fluffy::config::TransitionMode::Crossfade
         {
-            button::suggested("🌊 クロスフェード (Crossfade)")
+            button::suggested("🌊 クロスフェード (COSMIC専用)")
         } else {
-            button::standard("🌊 クロスフェード (Crossfade)")
+            button::standard("🌊 クロスフェード (COSMIC専用)")
         }
         .on_press(Message::SelectTransitionMode(
             fluffy::config::TransitionMode::Crossfade,
@@ -845,20 +845,20 @@ impl Application for FluffySettingsApp {
                 format!("⚠️ 環境判定: {}", self.transition_diagnostics)
             }
         } else if self.is_crossfade_ready {
-            "🟢 環境判定: クロスフェード利用可能 (cosmic-comp / NVDEC ハードウェア支援)".to_string()
+            "🟢 環境判定: クロスフェード利用可能 (cosmic-comp ハードウェア透過 wp_alpha_modifier_v1)".to_string()
         } else {
-            "⚠️ 環境判定: ハードカット適用 (アルファ制御未検出)".to_string()
+            "⚠️ 環境判定: ハードカット適用 (COSMIC環境外またはアルファ制御未検出)".to_string()
         };
 
         let mode_desc = match current_transition_mode {
             fluffy::config::TransitionMode::Auto => {
-                "【自動判別】実行環境をチェックし、Wayland/GPU条件が整っていれば滑らかな1秒クロスフェード、非対応時は安全にハードカットを選択します。"
+                "【自動判別】COSMIC環境（cosmic-compのハードウェア透過）が検出された場合は滑らかなクロスフェード、非対応環境では安全にハードカットを自動選択します。"
             }
             fluffy::config::TransitionMode::Crossfade => {
-                "【クロスフェード】動画切り替え時に常に1.0秒間の滑らかなディゾルブ（フェード移行）を実行します。"
+                "【クロスフェード】動画切り替え時に滑らかなディゾルブ（フェード移行）を実行します。※COSMICデスクトップ環境 (cosmic-comp) 専用のハードウェア透過機能です。"
             }
             fluffy::config::TransitionMode::HardCut => {
-                "【ハードカット】黒画面ゼロの即時切り替えを行います（従来の瞬時カット方式）。"
+                "【ハードカット】黒画面ゼロの即時切り替えを行います（瞬時カット方式）。"
             }
         };
 
