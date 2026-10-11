@@ -190,6 +190,12 @@ pub struct DaemonStatus {
     pub active_jobs: Vec<ConversionJobInfo>,
     #[serde(default)]
     pub supports_fullscreen_detection: bool,
+    #[serde(default)]
+    pub transition_mode: crate::config::TransitionMode,
+    #[serde(default)]
+    pub is_crossfade_ready: bool,
+    #[serde(default)]
+    pub transition_diagnostics: String,
 }
 
 #[cfg(test)]
@@ -270,6 +276,9 @@ mod tests {
                 error: None,
             }],
             supports_fullscreen_detection: true,
+            transition_mode: crate::config::TransitionMode::Auto,
+            is_crossfade_ready: true,
+            transition_diagnostics: "Hardware acceleration ready".to_string(),
         };
 
         let val = serde_json::to_value(&status).unwrap();
@@ -281,6 +290,35 @@ mod tests {
         assert!(deserialized.success);
         assert!(deserialized.error.is_none());
         assert!(deserialized.data.is_some());
+
+        let parsed_status: DaemonStatus =
+            serde_json::from_value(deserialized.data.unwrap()).unwrap();
+        assert_eq!(
+            parsed_status.transition_mode,
+            crate::config::TransitionMode::Auto
+        );
+        assert!(parsed_status.is_crossfade_ready);
+        assert_eq!(
+            parsed_status.transition_diagnostics,
+            "Hardware acceleration ready"
+        );
+    }
+
+    #[test]
+    fn test_daemon_status_backward_compatibility_missing_transition_fields() {
+        let old_json = r#"{
+            "daemon_version": "0.1.0",
+            "outputs": [],
+            "is_converting": false,
+            "converting_file": null,
+            "active_jobs": [],
+            "supports_fullscreen_detection": true
+        }"#;
+
+        let parsed: DaemonStatus = serde_json::from_str(old_json).unwrap();
+        assert_eq!(parsed.transition_mode, crate::config::TransitionMode::Auto);
+        assert!(!parsed.is_crossfade_ready);
+        assert_eq!(parsed.transition_diagnostics, "");
     }
 
     #[test]

@@ -31,6 +31,7 @@ pub enum Message {
     ToggleRestoreOnStartup(bool),
     ToggleAutostartDaemon(bool),
     TogglePauseOnFullscreen(bool),
+    SelectTransitionMode(fluffy::config::TransitionMode),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -208,6 +209,8 @@ struct FluffySettingsApp {
     is_fetching_status: bool,
     config: FluffyConfig,
     supports_fullscreen_detection: bool,
+    is_crossfade_ready: bool,
+    transition_diagnostics: String,
 }
 
 impl Application for FluffySettingsApp {
@@ -268,6 +271,8 @@ impl Application for FluffySettingsApp {
             is_fetching_status: true,
             config,
             supports_fullscreen_detection: true,
+            is_crossfade_ready: true,
+            transition_diagnostics: String::new(),
         };
 
         app.core
@@ -303,6 +308,8 @@ impl Application for FluffySettingsApp {
                         self.daemon_online = true;
                         self.outputs = status.outputs;
                         self.supports_fullscreen_detection = status.supports_fullscreen_detection;
+                        self.is_crossfade_ready = status.is_crossfade_ready;
+                        self.transition_diagnostics = status.transition_diagnostics;
                         if status.is_converting {
                             self.is_converting = true;
                             if self.converting_file.is_none() {
@@ -535,6 +542,21 @@ impl Application for FluffySettingsApp {
                 }
                 self.config.startup_and_wallpaper.pause_on_fullscreen = val;
                 let _ = self.config.save();
+                Task::none()
+            }
+
+            Message::SelectTransitionMode(mode) => {
+                self.config.startup_and_wallpaper.transition_mode = mode;
+                let _ = self.config.save();
+                let mode_name = match mode {
+                    fluffy::config::TransitionMode::Auto => "自動判別 (Auto)",
+                    fluffy::config::TransitionMode::Crossfade => "クロスフェード (Crossfade)",
+                    fluffy::config::TransitionMode::HardCut => "ハードカット (Hard Cut)",
+                };
+                self.status_message = Some((
+                    format!("動画切り替えトランジションを「{mode_name}」に設定しました"),
+                    false,
+                ));
                 Task::none()
             }
         }
@@ -781,10 +803,82 @@ impl Application for FluffySettingsApp {
             .align_y(Alignment::Center)
             .spacing(12);
 
+        // Transition Style / 動画切り替えトランジション (3つの選択肢: 自動判別 / クロスフェード / ハードカット)
+        let current_transition_mode = self.config.startup_and_wallpaper.transition_mode;
+
+        let btn_auto = if current_transition_mode == fluffy::config::TransitionMode::Auto {
+            button::suggested("🪄 自動判別 (Auto)")
+        } else {
+            button::standard("🪄 自動判別 (Auto)")
+        }
+        .on_press(Message::SelectTransitionMode(
+            fluffy::config::TransitionMode::Auto,
+        ));
+
+        let btn_crossfade = if current_transition_mode == fluffy::config::TransitionMode::Crossfade
+        {
+            button::suggested("🌊 クロスフェード (Crossfade)")
+        } else {
+            button::standard("🌊 クロスフェード (Crossfade)")
+        }
+        .on_press(Message::SelectTransitionMode(
+            fluffy::config::TransitionMode::Crossfade,
+        ));
+
+        let btn_hardcut = if current_transition_mode == fluffy::config::TransitionMode::HardCut {
+            button::suggested("⚡ ハードカット (Hard Cut)")
+        } else {
+            button::standard("⚡ ハードカット (Hard Cut)")
+        }
+        .on_press(Message::SelectTransitionMode(
+            fluffy::config::TransitionMode::HardCut,
+        ));
+
+        let transition_buttons = row![btn_auto, btn_crossfade, btn_hardcut].spacing(8);
+
+        let diag_text = if !self.daemon_online {
+            "⚪ デーモン未接続 (起動後に実行環境を自動判定します)".to_string()
+        } else if !self.transition_diagnostics.is_empty() {
+            if self.is_crossfade_ready {
+                format!("🟢 環境判定: {}", self.transition_diagnostics)
+            } else {
+                format!("⚠️ 環境判定: {}", self.transition_diagnostics)
+            }
+        } else if self.is_crossfade_ready {
+            "🟢 環境判定: クロスフェード利用可能 (cosmic-comp / NVDEC ハードウェア支援)".to_string()
+        } else {
+            "⚠️ 環境判定: ハードカット適用 (アルファ制御未検出)".to_string()
+        };
+
+        let mode_desc = match current_transition_mode {
+            fluffy::config::TransitionMode::Auto => {
+                "【自動判別】実行環境をチェックし、Wayland/GPU条件が整っていれば滑らかな1秒クロスフェード、非対応時は安全にハードカットを選択します。"
+            }
+            fluffy::config::TransitionMode::Crossfade => {
+                "【クロスフェード】動画切り替え時に常に1.0秒間の滑らかなディゾルブ（フェード移行）を実行します。"
+            }
+            fluffy::config::TransitionMode::HardCut => {
+                "【ハードカット】黒画面ゼロの即時切り替えを行います（従来の瞬時カット方式）。"
+            }
+        };
+
+        let transition_card = column![
+            column![
+                text("Transition Style / 動画切り替えトランジション").size(14),
+                text("新しい動画壁紙へ切り替える際のアニメーション動作を選択します。").size(12),
+            ]
+            .spacing(2),
+            transition_buttons,
+            text(mode_desc).size(12),
+            text(diag_text).size(11),
+        ]
+        .spacing(8);
+
         let settings_box = column![
             container(restore_card).padding(10).width(Length::Fill),
             container(autostart_card).padding(10).width(Length::Fill),
             container(fullscreen_card).padding(10).width(Length::Fill),
+            container(transition_card).padding(10).width(Length::Fill),
         ]
         .spacing(8);
 

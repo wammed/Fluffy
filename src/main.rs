@@ -141,6 +141,14 @@ pub enum Commands {
         /// Configure loop crossfade duration in milliseconds (0 to disable)
         #[arg(long)]
         loop_crossfade_ms: Option<u32>,
+
+        /// Video transition mode on switch (auto, crossfade, hard_cut)
+        #[arg(long)]
+        transition_mode: Option<String>,
+
+        /// Crossfade duration for video switch in milliseconds (default: 1000)
+        #[arg(long)]
+        switch_crossfade_ms: Option<u32>,
     },
 }
 
@@ -200,11 +208,15 @@ fn main() -> Result<()> {
             autostart,
             pause_fullscreen,
             loop_crossfade_ms,
+            transition_mode,
+            switch_crossfade_ms,
         }) => cmd_config(
             restore_on_startup,
             autostart,
             pause_fullscreen,
             loop_crossfade_ms,
+            transition_mode,
+            switch_crossfade_ms,
         ),
         None => {
             // Default: run daemon (with direct_video if given)
@@ -397,6 +409,8 @@ fn cmd_config(
     autostart: Option<bool>,
     pause_fullscreen: Option<bool>,
     loop_crossfade_ms: Option<u32>,
+    transition_mode: Option<String>,
+    switch_crossfade_ms: Option<u32>,
 ) -> Result<()> {
     let mut config = FluffyConfig::load();
     let mut modified = false;
@@ -437,6 +451,23 @@ fn cmd_config(
         modified = true;
     }
 
+    if let Some(mode_str) = transition_mode {
+        match mode_str.parse::<fluffy::config::TransitionMode>() {
+            Ok(mode) => {
+                config.startup_and_wallpaper.transition_mode = mode;
+                modified = true;
+            }
+            Err(e) => {
+                eprintln!("[Fluffy] Invalid transition mode '{mode_str}': {e}");
+            }
+        }
+    }
+
+    if let Some(val) = switch_crossfade_ms {
+        config.startup_and_wallpaper.switch_crossfade_ms = val;
+        modified = true;
+    }
+
     if modified {
         config.save()?;
         println!("[Fluffy] Configuration updated successfully.");
@@ -460,6 +491,14 @@ fn cmd_config(
     println!(
         "    loop_crossfade_ms:   {} ms (Crossfade head/tail for seamless looping, 0 to disable)",
         config.startup_and_wallpaper.loop_crossfade_ms
+    );
+    println!(
+        "    transition_mode:     {} (Transition style on switch: auto, crossfade, hard_cut)",
+        config.startup_and_wallpaper.transition_mode
+    );
+    println!(
+        "    switch_crossfade_ms: {} ms (Video switch crossfade duration)",
+        config.startup_and_wallpaper.switch_crossfade_ms
     );
 
     let state = DaemonState::load();

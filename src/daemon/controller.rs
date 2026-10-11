@@ -357,7 +357,21 @@ impl WallpaperDaemon {
                         scale: out.scale,
                     });
                 }
-                output_statuses.sort_by(|a, b| a.name.cmp(&b.name));
+                let total_pixels: u64 = output_statuses
+                    .iter()
+                    .map(|o| (o.width as u64) * (o.height as u64))
+                    .sum();
+                let trans_env = crate::playback::transition::probe_system_transition_environment(
+                    true,
+                    output_statuses.len(),
+                    if total_pixels == 0 {
+                        1920 * 1080
+                    } else {
+                        total_pixels
+                    },
+                );
+                let trans_cap =
+                    crate::playback::transition::evaluate_transition_capability(&trans_env);
 
                 let status = DaemonStatus {
                     daemon_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -366,6 +380,9 @@ impl WallpaperDaemon {
                     converting_file: self.job_manager.current_converting_file(),
                     active_jobs: self.job_manager.active_jobs(),
                     supports_fullscreen_detection: self.wayland_ctx.supports_fullscreen_detection(),
+                    transition_mode: self.config.startup_and_wallpaper.transition_mode,
+                    is_crossfade_ready: trans_cap.is_crossfade_ready,
+                    transition_diagnostics: trans_cap.diagnostic_reason,
                 };
 
                 match serde_json::to_value(&status) {
