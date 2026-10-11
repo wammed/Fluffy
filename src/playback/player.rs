@@ -529,7 +529,7 @@ impl GstVideoPlayer {
                 if let Some((video_ptr, area_ptr_opt)) = new_handle.get_wayland_surfaces() {
                     unsafe {
                         match wayland_client::backend::ObjectId::from_ptr(
-                            &wayland_client::protocol::wl_surface::WlSurface::interface(),
+                            wayland_client::protocol::wl_surface::WlSurface::interface(),
                             video_ptr as *mut _,
                         ) {
                             Ok(video_obj_id) => {
@@ -546,24 +546,23 @@ impl GstVideoPlayer {
                                         video_wl_surf.commit();
 
                                         let mut area_crossfade = None;
-                                        if let Some(area_ptr) = area_ptr_opt {
-                                            if let Ok(area_obj_id) = wayland_client::backend::ObjectId::from_ptr(
-                                                &wayland_client::protocol::wl_surface::WlSurface::interface(),
+                                        if let Some(area_ptr) = area_ptr_opt
+                                            && let Ok(area_obj_id) = wayland_client::backend::ObjectId::from_ptr(
+                                                wayland_client::protocol::wl_surface::WlSurface::interface(),
                                                 area_ptr as *mut _,
-                                            ) {
-                                                if let Ok(area_wl_surf) = wayland_client::Proxy::from_id(&alpha_ctx.conn, area_obj_id) {
-                                                    let area_alpha_mod = alpha_ctx
-                                                        .modifier
-                                                        .get_surface(&area_wl_surf, &alpha_ctx.qh, ());
-                                                    area_alpha_mod.set_multiplier(0);
-                                                    area_wl_surf.commit();
-                                                    area_crossfade = Some((area_wl_surf, area_alpha_mod));
-                                                    tracing::info!(
-                                                        output = %output,
-                                                        "[Player] Hardware crossfade area_surface (background) alpha initialized to 0"
-                                                    );
-                                                }
-                                            }
+                                            )
+                                            && let Ok(area_wl_surf) = wayland_client::Proxy::from_id(&alpha_ctx.conn, area_obj_id)
+                                        {
+                                            let area_alpha_mod = alpha_ctx
+                                                .modifier
+                                                .get_surface(&area_wl_surf, &alpha_ctx.qh, ());
+                                            area_alpha_mod.set_multiplier(0);
+                                            area_wl_surf.commit();
+                                            area_crossfade = Some((area_wl_surf, area_alpha_mod));
+                                            tracing::info!(
+                                                output = %output,
+                                                "[Player] Hardware crossfade area_surface (background) alpha initialized to 0"
+                                            );
                                         }
 
                                         let has_area = area_crossfade.is_some();

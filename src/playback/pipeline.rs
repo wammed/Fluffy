@@ -292,7 +292,7 @@ mod tests {
                     if let Some(area_ptr) = found_area {
                         assert!(!area_ptr.is_null());
                         let obj_id = wayland_client::backend::ObjectId::from_ptr(
-                            &wayland_client::protocol::wl_surface::WlSurface::interface(),
+                            wayland_client::protocol::wl_surface::WlSurface::interface(),
                             area_ptr as *mut _,
                         );
                         assert!(obj_id.is_ok());
