@@ -380,6 +380,25 @@ impl OutputManager {
         video_path: &Path,
         req_generation: Option<u64>,
     ) -> Result<SetVideoResult> {
+        let config = crate::config::FluffyConfig::load();
+        self.set_video_with_options(
+            target_output,
+            video_path,
+            req_generation,
+            config.startup_and_wallpaper.transition_mode,
+            config.startup_and_wallpaper.switch_crossfade_ms,
+        )
+    }
+
+    /// Sets video wallpaper with explicit transition mode and crossfade duration.
+    pub fn set_video_with_options(
+        &mut self,
+        target_output: Option<&str>,
+        video_path: &Path,
+        req_generation: Option<u64>,
+        mode: crate::config::TransitionMode,
+        crossfade_ms: u32,
+    ) -> Result<SetVideoResult> {
         let target_gen = match req_generation {
             Some(g) => g,
             None => self.generation_tracker.allocate(target_output, None)?,
@@ -417,10 +436,13 @@ impl OutputManager {
                 epoch_ms,
                 "[OutputManager] Video switch requested"
             );
-            match out
-                .player
-                .play_with_generation(video_path, target_gen, old_gen)
-            {
+            match out.player.play_with_transition(
+                video_path,
+                target_gen,
+                old_gen,
+                mode,
+                crossfade_ms,
+            ) {
                 Ok(()) => {
                     tracing::info!(
                         event = "video_switch_completed",
@@ -484,10 +506,13 @@ impl OutputManager {
                     epoch_ms,
                     "[OutputManager] Video switch requested"
                 );
-                match out
-                    .player
-                    .play_with_generation(video_path, target_gen, old_gen)
-                {
+                match out.player.play_with_transition(
+                    video_path,
+                    target_gen,
+                    old_gen,
+                    mode,
+                    crossfade_ms,
+                ) {
                     Ok(()) => {
                         tracing::info!(
                             event = "video_switch_completed",

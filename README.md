@@ -65,6 +65,7 @@ cargo build --release --features gui
 
 - **Non-Destructive Coexistence (`Layer::Bottom`)**: Renders on `Layer::Bottom` without killing or modifying `cosmic-bg`. Exiting Fluffy immediately restores your static wallpaper.
 - **Zero-Flicker Seamless Switching & Looping**: Dual-pipeline pre-roll architecture and loop crossfading eliminate black screens, flashing, and stutter at loop boundaries.
+- **Smooth Switch Transitions (Crossfade & Adaptive Hardware Detection)**: 60fps alpha blend transitions between wallpapers. System capacity (GPU hardware decode, 8+ thread multi-core CPUs, display resolution) is automatically diagnosed to select optimal transitions or fallback to resource-preserving cuts ([Hardware Requirements Matrix](docs/CONFIGURATION.md#transition-modes-and-hardware-requirement-matrix)).
 - **Hardware-Accelerated Playback (NVDEC / VA-API)**: Prioritizes GPU video decoders to minimize CPU utilization and heat, with transparent fallback to software decoding.
 - **Architectural Isolation (Daemon vs. GUI)**: Micro-footprint resident daemon (~4.7MB / ~40MB RSS) loosely coupled with an ephemeral `libcosmic` settings GUI.
 - **Auto-Pause on Fullscreen**: Automatically pauses playback during fullscreen gaming or media playback to preserve GPU/CPU resources (COSMIC & wlroots protocols).

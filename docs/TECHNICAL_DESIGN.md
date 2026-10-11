@@ -1218,3 +1218,26 @@ When importing videos that already comply with standard specifications (H.264 / 
 * **Dynamic Buffer Allocation**: In `SlotPool`, dynamic buffer capacity calculation now scales with geometry changes, completely avoiding buffer overflow crashes on display hotplug or resolution adjustments.
 * **Safe POSIX FFI**: Replaced unsafe `libc::getuid` calls with safe `rustix::process::getuid()`.
 * **Declarative CLI**: Migrated manual string-splitting argument parsing to type-safe declarative `clap` derive structures.
+
+------------------------------------------------------------------------
+
+## 28. Video Switch Transition Architecture & Hardware Capability Diagnostics
+
+### 28.1 Dual-Pipeline Crossfade Mechanism
+To enhance user experience during wallpaper switching (A ➔ B), Fluffy supports a smooth 1.0s (configurable) crossfade animation in addition to standard instant cut:
+1. **Concurrent Overlap**: The existing video pipeline A continues playback while the new video pipeline B is prerolled and started concurrently.
+2. **Alpha Blending Animation**: Using GStreamer's `alpha` filter element, a dedicated fader thread animates pipeline B's alpha from `0.0 ➔ 1.0` at 60fps (16ms interval) using smoothstep easing.
+3. **Safe Teardown**: Upon crossfade completion, pipeline A is safely stopped (`PAUSED ➔ READY ➔ NULL`) and deallocated.
+
+### 28.2 Hardware Requirement & Automatic Fallback Matrix
+Running two simultaneous video decode pipelines momentarily consumes system resources. In `Auto` mode, Fluffy probes the environment and only applies crossfading when sufficient hardware acceleration or multi-core CPU capacity exists, safely falling back to `HardCut` on constrained machines:
+
+| Effective Mode | Automatic Selection Conditions (Minimum Requirements) | Runtime Characteristics & Load |
+| :--- | :--- | :--- |
+| **Hardware Accelerated Crossfade**<br>(HW Crossfade) | **GPU / Hardware Decoder Available**: <br>• GStreamer `nvcodec` (NVIDIA CUDA/NVDEC), `vaapi` (Intel/AMD), or `vulkan` plugins detected, or individual hardware decoder elements (`nvh264dec`, `cudaconvert`, `vulkanvp9dec`, `vaapih264dec`, etc.).<br>• No display count or resolution ceiling (supports 4K and multi-monitor). | Offloads video decoding to dedicated ASIC (NVDEC / VA-API) with GStreamer alpha element.<br>CPU usage: ~1–3% negligible overhead.<br>Silky-smooth 60fps fade. |
+| **High-Spec Software Crossfade**<br>(High-Spec SW Crossfade) | **No HW Decoder + High-Performance Multi-Core CPU**: <br>• Logical CPU thread count is **8 threads or higher** (e.g., Core i7/i9, Ryzen 7/9 multi-core desktop CPUs).<br>• No display count or resolution ceiling (supports 4K and multi-monitor). | Ample CPU parallelism allows decoding two concurrent streams via libav `avdec_h264` without frame drops or desktop stutter.<br>CPU usage: Temporarily 5–15% during transition only. |
+| **Low-Load Software Crossfade**<br>(Low-Load SW Crossfade) | **No HW Decoder + Low-Power CPU + Single Low-Res Display**: <br>• Logical CPU thread count is **under 8 threads** (e.g., 4-core mobile/low-power laptop).<br>• Display count: **Single display only** (`output_count == 1`).<br>• Total resolution: **WQHD or lower** (total pixels ≤ 2,560 × 1,440 ≈ 3.68 Mpx, including standard FHD 1920x1080). | Low-power mobile CPUs can safely handle 60fps software decode crossfading for a single screen at 1080p/1440p.<br>CPU usage: Temporarily 10–25% during transition. |
+| **HardCut Fallback (Resource Guard)**<br>(HardCut Fallback) | **Triggers on any of the following**: <br>1. **Unsupported Compositor**: Wayland compositor does not support alpha modifier/subsurface alpha control protocol.<br>2. **Low-Power CPU + Heavy Environment**: No hardware decoder AND CPU has **under 8 threads** on **multi-monitor (≥2 screens)** or **high resolution (> WQHD / 4K)** setups.<br>*(Also active when explicitly set to `"hard_cut"`)* | Prevents desktop micro-stutters and frame drops on constrained devices from dual 4K CPU decoding.<br>Immediately tears down the old pipeline for instant flicker-free switch. |
+
+### 28.3 Manual Override
+Users can force crossfading regardless of the automatic resource guard by selecting "Crossfade" in `fluffy-settings` or executing `fluffy config --transition-mode crossfade`.

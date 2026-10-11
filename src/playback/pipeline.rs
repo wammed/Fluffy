@@ -24,6 +24,7 @@ pub struct PipelineHandle {
     pub video_id: String,
     pub session_id: String,
     pub loop_count: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    pub alpha_element: Option<gstreamer::Element>,
 }
 
 impl PipelineHandle {
@@ -37,6 +38,33 @@ impl PipelineHandle {
         width: u32,
         height: u32,
         video_path: &Path,
+    ) -> Result<Self> {
+        unsafe {
+            Self::new_with_alpha(
+                output_name,
+                generation,
+                raw_display_ptr,
+                raw_surface_ptr,
+                width,
+                height,
+                video_path,
+                None,
+            )
+        }
+    }
+
+    /// # Safety
+    /// `raw_display_ptr` must be a valid pointer to a `wl_display`.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn new_with_alpha(
+        output_name: impl Into<String>,
+        generation: u64,
+        raw_display_ptr: *mut std::ffi::c_void,
+        raw_surface_ptr: usize,
+        width: u32,
+        height: u32,
+        video_path: &Path,
+        initial_alpha: Option<f64>,
     ) -> Result<Self> {
         let abs_path = video_path.canonicalize()?;
         let uri = gstreamer::glib::filename_to_uri(&abs_path, None)
@@ -84,6 +112,17 @@ impl PipelineHandle {
             .property("video-sink", &sink)
             .property("volume", 0.0f64);
 
+        let alpha_element = if let Some(alpha) = initial_alpha {
+            gstreamer::ElementFactory::make("alpha")
+                .name("fluffy-crossfade-alpha")
+                .property("alpha", alpha)
+                .property("prefer-passthrough", true)
+                .build()
+                .ok()
+        } else {
+            None
+        };
+
         if let Some(ref asink) = audio_sink {
             playbin_builder = playbin_builder.property("audio-sink", asink);
         }
@@ -91,6 +130,10 @@ impl PipelineHandle {
         let playbin = playbin_builder
             .build()
             .map_err(|e| FluffyError::Playback(format!("Failed to create playbin: {e}")))?;
+
+        if let Some(ref a_elem) = alpha_element {
+            playbin.set_property("video-filter", a_elem);
+        }
 
         let pipeline = playbin
             .dynamic_cast::<gstreamer::Pipeline>()
@@ -107,6 +150,7 @@ impl PipelineHandle {
             video = ?video_path,
             width,
             height,
+            has_alpha_filter = alpha_element.is_some(),
             "[Pipeline] Created GStreamer playbin pipeline with waylandsink"
         );
 
@@ -150,7 +194,15 @@ impl PipelineHandle {
             video_id,
             session_id,
             loop_count,
+            alpha_element,
         })
+    }
+
+    /// Sets the opacity (alpha) of the video pipeline if crossfade alpha filter is active.
+    pub fn set_alpha(&self, alpha: f64) {
+        if let Some(ref elem) = self.alpha_element {
+            elem.set_property("alpha", alpha.clamp(0.0, 1.0));
+        }
     }
 }
 

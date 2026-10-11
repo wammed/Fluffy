@@ -28,6 +28,7 @@ pub struct GstVideoPlayer {
     state: PlaybackState,
     generation: u64,
     loop_count: u64,
+    active_crossfade_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl GstVideoPlayer {
@@ -60,6 +61,7 @@ impl GstVideoPlayer {
             state: PlaybackState::Stopped,
             generation: 0,
             loop_count: 0,
+            active_crossfade_cancel: None,
         })
     }
 
@@ -92,13 +94,45 @@ impl GstVideoPlayer {
         Ok(())
     }
 
-    /// Plays a video with generation tracking and benchmark lifecycle event emissions.
+    /// Immediately completes or cancels any in-flight crossfade transition, forcing
+    /// current pipeline to full opacity and dropping previous pipeline.
+    pub fn finish_active_crossfade(&mut self) {
+        if let Some(cancel) = self.active_crossfade_cancel.take() {
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        if let Some(ref handle) = self.pipeline_handle {
+            handle.set_alpha(1.0);
+        }
+    }
+
+    /// Plays a video with generation tracking using currently configured transition settings.
     pub fn play_with_generation(
         &mut self,
         video: &Path,
         generation: u64,
         old_generation: u64,
     ) -> Result<()> {
+        let config = crate::config::FluffyConfig::load();
+        self.play_with_transition(
+            video,
+            generation,
+            old_generation,
+            config.startup_and_wallpaper.transition_mode,
+            config.startup_and_wallpaper.switch_crossfade_ms,
+        )
+    }
+
+    /// Plays a video with generation tracking and configurable crossfade transition.
+    pub fn play_with_transition(
+        &mut self,
+        video: &Path,
+        generation: u64,
+        old_generation: u64,
+        mode: crate::config::TransitionMode,
+        crossfade_ms: u32,
+    ) -> Result<()> {
+        self.finish_active_crossfade();
+
         let sid = crate::benchmark::session_id();
         let video_id = crate::benchmark::safe_video_id(video);
         let output = &self.output_name;
@@ -110,13 +144,27 @@ impl GstVideoPlayer {
             .as_millis() as u64;
 
         // Seamless transition with Dual Pipeline:
-        // 1. If an active pipeline exists, keep it running so old frames remain visible.
-        // 2. Instantiate a new pipeline for the incoming video targeting the same layer surface.
+        // 1. If an active pipeline exists, evaluate transition mode (Auto -> capability check, Crossfade -> 1.0s overlap, HardCut -> immediate cut).
+        // 2. If crossfade is enabled, instantiate new pipeline with initial alpha 0.0.
         // 3. Set the new pipeline to PAUSED to preroll the first frame onto its new subsurface.
-        // 4. Wait for preroll to complete (first frame is committed to the compositor).
+        // 4. Wait for preroll to complete.
         // 5. Transition the new pipeline to PLAYING.
-        // 6. Tear down the old pipeline (its subsurface is cleanly removed underneath).
+        // 6. If crossfade: gradually animate alpha 0.0 -> 1.0 over crossfade_ms, then tear down old pipeline.
+        //    If hard cut: immediately tear down old pipeline.
         if self.pipeline_handle.is_some() {
+            let is_crossfade = if crossfade_ms > 0 {
+                let trans_env = crate::playback::transition::probe_system_transition_environment(
+                    true,
+                    1,
+                    (self.width as u64) * (self.height as u64),
+                );
+                let cap = crate::playback::transition::evaluate_transition_capability(&trans_env);
+                let eff = crate::playback::transition::resolve_effective_transition(mode, &cap);
+                eff == crate::config::TransitionMode::Crossfade
+            } else {
+                false
+            };
+
             tracing::info!(
                 event = "new_pipeline_created",
                 switch_id = %switch_id,
@@ -125,13 +173,16 @@ impl GstVideoPlayer {
                 video_id = %video_id,
                 session_id = %sid,
                 epoch_ms,
+                is_crossfade,
+                crossfade_ms,
                 total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
                 "[Player] New pipeline created for video switch"
             );
 
+            let initial_alpha = if is_crossfade { Some(0.0) } else { None };
             let create_start = std::time::Instant::now();
             let new_handle = unsafe {
-                PipelineHandle::new(
+                PipelineHandle::new_with_alpha(
                     &self.output_name,
                     generation,
                     self.raw_display_ptr,
@@ -139,6 +190,7 @@ impl GstVideoPlayer {
                     self.width,
                     self.height,
                     video,
+                    initial_alpha,
                 )?
             };
             let create_elapsed_ms = create_start.elapsed().as_secs_f64() * 1000.0;
@@ -517,69 +569,139 @@ impl GstVideoPlayer {
             );
 
             if let Some(old) = old_handle {
-                let teardown_start = std::time::Instant::now();
-                tracing::info!(
-                    event = "old_pipeline_teardown_started",
-                    switch_id = %switch_id,
-                    output = %output,
-                    generation = old_generation,
-                    session_id = %sid,
-                    epoch_ms,
-                    total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
-                    "[Player] Old pipeline teardown started"
-                );
-                if let Err(e) = old.pipeline.set_state(gstreamer::State::Null) {
-                    tracing::warn!(
-                        event = "pipeline_error",
+                if is_crossfade && let Some(ref current) = self.pipeline_handle {
+                    let alpha_elem = current.alpha_element.clone();
+                    let cancel_flag =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let cancel_clone = cancel_flag.clone();
+                    self.active_crossfade_cancel = Some(cancel_flag);
+
+                    let out_name = output.to_string();
+                    let sw_id = switch_id.clone();
+                    let s_id = sid.to_string();
+                    let dur_ms = crossfade_ms;
+
+                    tracing::info!(
+                        event = "crossfade_transition_started",
+                        switch_id = %switch_id,
+                        output = %output,
+                        generation = generation,
+                        session_id = %sid,
+                        duration_ms = dur_ms,
+                        "[Player] Starting seamless crossfade transition"
+                    );
+
+                    let _ = std::thread::Builder::new()
+                        .name(format!("fluffy-xfade-{}", output))
+                        .spawn(move || {
+                            let start = std::time::Instant::now();
+                            let total_dur = std::time::Duration::from_millis(dur_ms as u64);
+                            let frame_dur = std::time::Duration::from_millis(16);
+
+                            loop {
+                                if cancel_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                                    if let Some(ref elem) = alpha_elem {
+                                        elem.set_property("alpha", 1.0f64);
+                                    }
+                                    let _ = old.pipeline.set_state(gstreamer::State::Null);
+                                    return;
+                                }
+
+                                let elapsed = start.elapsed();
+                                if elapsed >= total_dur {
+                                    if let Some(ref elem) = alpha_elem {
+                                        elem.set_property("alpha", 1.0f64);
+                                    }
+                                    let _ = old.pipeline.set_state(gstreamer::State::Null);
+                                    tracing::info!(
+                                        event = "crossfade_transition_completed",
+                                        switch_id = %sw_id,
+                                        output = %out_name,
+                                        session_id = %s_id,
+                                        elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+                                        "[Player] Crossfade transition completed successfully"
+                                    );
+                                    break;
+                                }
+
+                                let progress = (elapsed.as_secs_f64() / total_dur.as_secs_f64())
+                                    .clamp(0.0, 1.0);
+                                // Smoothstep easing: 3x^2 - 2x^3
+                                let alpha = (3.0 * progress * progress
+                                    - 2.0 * progress * progress * progress)
+                                    .clamp(0.0, 1.0);
+                                if let Some(ref elem) = alpha_elem {
+                                    elem.set_property("alpha", alpha);
+                                }
+
+                                std::thread::sleep(frame_dur);
+                            }
+                        });
+                } else {
+                    let teardown_start = std::time::Instant::now();
+                    tracing::info!(
+                        event = "old_pipeline_teardown_started",
                         switch_id = %switch_id,
                         output = %output,
                         generation = old_generation,
                         session_id = %sid,
                         epoch_ms,
-                        error = %e,
-                        "[Player] Failed to set old pipeline state to Null"
+                        total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
+                        "[Player] Old pipeline teardown started"
+                    );
+                    if let Err(e) = old.pipeline.set_state(gstreamer::State::Null) {
+                        tracing::warn!(
+                            event = "pipeline_error",
+                            switch_id = %switch_id,
+                            output = %output,
+                            generation = old_generation,
+                            session_id = %sid,
+                            epoch_ms,
+                            error = %e,
+                            "[Player] Failed to set old pipeline state to Null"
+                        );
+                    }
+                    let set_null_elapsed_ms = teardown_start.elapsed().as_secs_f64() * 1000.0;
+                    tracing::info!(
+                        event = "old_pipeline_set_null_returned",
+                        switch_id = %switch_id,
+                        output = %output,
+                        generation = old_generation,
+                        session_id = %sid,
+                        epoch_ms,
+                        stage_elapsed_ms = set_null_elapsed_ms,
+                        total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
+                        "[Player] Old pipeline set_state(NULL) returned (API returned; internal resources may still be releasing asynchronously)"
+                    );
+                    let teardown_total_elapsed_ms = teardown_start.elapsed().as_secs_f64() * 1000.0;
+                    tracing::info!(
+                        event = "old_pipeline_teardown_completed",
+                        switch_id = %switch_id,
+                        output = %output,
+                        generation = old_generation,
+                        session_id = %sid,
+                        epoch_ms,
+                        stage_elapsed_ms = teardown_total_elapsed_ms,
+                        total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
+                        "[Player] Old pipeline teardown completed"
+                    );
+
+                    // Explicitly time the destruction of old PipelineHandle in Rust
+                    let drop_start = std::time::Instant::now();
+                    drop(old);
+                    let drop_elapsed_ms = drop_start.elapsed().as_secs_f64() * 1000.0;
+                    tracing::info!(
+                        event = "old_pipeline_rust_drop_completed",
+                        switch_id = %switch_id,
+                        output = %output,
+                        generation = old_generation,
+                        session_id = %sid,
+                        epoch_ms,
+                        stage_elapsed_ms = drop_elapsed_ms,
+                        total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
+                        "[Player] Old pipeline Rust handle drop completed (C unrefs and thread joins; internal OS/driver resources may still release asynchronously)"
                     );
                 }
-                let set_null_elapsed_ms = teardown_start.elapsed().as_secs_f64() * 1000.0;
-                tracing::info!(
-                    event = "old_pipeline_set_null_returned",
-                    switch_id = %switch_id,
-                    output = %output,
-                    generation = old_generation,
-                    session_id = %sid,
-                    epoch_ms,
-                    stage_elapsed_ms = set_null_elapsed_ms,
-                    total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
-                    "[Player] Old pipeline set_state(NULL) returned (API returned; internal resources may still be releasing asynchronously)"
-                );
-                let teardown_total_elapsed_ms = teardown_start.elapsed().as_secs_f64() * 1000.0;
-                tracing::info!(
-                    event = "old_pipeline_teardown_completed",
-                    switch_id = %switch_id,
-                    output = %output,
-                    generation = old_generation,
-                    session_id = %sid,
-                    epoch_ms,
-                    stage_elapsed_ms = teardown_total_elapsed_ms,
-                    total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
-                    "[Player] Old pipeline teardown completed"
-                );
-
-                // Explicitly time the destruction of old PipelineHandle in Rust
-                let drop_start = std::time::Instant::now();
-                drop(old);
-                let drop_elapsed_ms = drop_start.elapsed().as_secs_f64() * 1000.0;
-                tracing::info!(
-                    event = "old_pipeline_rust_drop_completed",
-                    switch_id = %switch_id,
-                    output = %output,
-                    generation = old_generation,
-                    session_id = %sid,
-                    epoch_ms,
-                    stage_elapsed_ms = drop_elapsed_ms,
-                    total_elapsed_ms = switch_start.elapsed().as_secs_f64() * 1000.0,
-                    "[Player] Old pipeline Rust handle drop completed (C unrefs and thread joins; internal OS/driver resources may still release asynchronously)"
-                );
             }
 
             self.current_video = Some(video.to_path_buf());
@@ -658,6 +780,7 @@ impl VideoPlayer for GstVideoPlayer {
     }
 
     fn pause(&mut self) -> Result<()> {
+        self.finish_active_crossfade();
         if let Some(ref handle) = self.pipeline_handle {
             handle.pipeline.set_state(gstreamer::State::Paused)?;
             self.state = PlaybackState::Paused;
@@ -704,6 +827,7 @@ impl VideoPlayer for GstVideoPlayer {
     }
 
     fn stop(&mut self) -> Result<()> {
+        self.finish_active_crossfade();
         if let Some(handle) = self.pipeline_handle.take() {
             let sid = crate::benchmark::session_id();
             if let Err(e) = handle.pipeline.set_state(gstreamer::State::Null) {
@@ -820,5 +944,31 @@ impl VideoPlayer for GstVideoPlayer {
         }
 
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_finish_active_crossfade_cancels_and_resets() {
+        let mut player = GstVideoPlayer::new(std::ptr::null_mut(), 0, 1920, 1080).unwrap();
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        player.active_crossfade_cancel = Some(flag.clone());
+
+        assert!(!flag.load(std::sync::atomic::Ordering::SeqCst));
+        player.finish_active_crossfade();
+        assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(player.active_crossfade_cancel.is_none());
+    }
+
+    #[test]
+    fn test_player_initial_state() {
+        let player = GstVideoPlayer::new(std::ptr::null_mut(), 0, 1920, 1080).unwrap();
+        assert_eq!(player.state(), PlaybackState::Stopped);
+        assert_eq!(player.current_video(), None);
+        assert_eq!(player.generation(), 0);
+        assert_eq!(player.loop_count(), 0);
     }
 }

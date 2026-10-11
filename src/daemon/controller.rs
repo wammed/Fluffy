@@ -201,7 +201,14 @@ impl WallpaperDaemon {
         path: &Path,
         generation: Option<u64>,
     ) -> Result<crate::ipc::SetVideoResult> {
-        let res = self.outputs.set_video(target_output, path, generation)?;
+        self.config = crate::config::FluffyConfig::load();
+        let res = self.outputs.set_video_with_options(
+            target_output,
+            path,
+            generation,
+            self.config.startup_and_wallpaper.transition_mode,
+            self.config.startup_and_wallpaper.switch_crossfade_ms,
+        )?;
         self.save_output_wallpaper_state(target_output, path);
         if self.is_effective_paused() {
             let _ = self.outputs.pause(target_output);
